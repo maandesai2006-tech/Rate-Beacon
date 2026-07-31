@@ -3,6 +3,18 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+// Blueprint registration marks for framed cards.
+function Corners() {
+  return (
+    <>
+      <i className="corner tl" aria-hidden />
+      <i className="corner tr" aria-hidden />
+      <i className="corner bl" aria-hidden />
+      <i className="corner br" aria-hidden />
+    </>
+  );
+}
+
 interface FoundHotel {
   hotelKey: string;
   name: string;
@@ -163,16 +175,9 @@ export default function SetupPage() {
     router.push("/");
   }
 
-  const inputStyle = {
-    borderColor: "var(--baseline)",
-    background: "var(--surface)",
-  } as const;
-
   return (
     <main className="mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold">
-        {profileId ? "Edit profile" : "New hotel profile"}
-      </h1>
+      <h1 className="text-2xl">{profileId ? "Edit profile" : "New hotel profile"}</h1>
       <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
         A profile is one baseline hotel plus the competitor set it&apos;s shopped
         against. Rates come from TripAdvisor&apos;s public compare list (via the
@@ -180,9 +185,10 @@ export default function SetupPage() {
       </p>
 
       {/* Step 1: paste link */}
-      <section className="mt-8">
-        <h2 className="font-medium">1 · Baseline hotel</h2>
-        <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+      <section className="card card--frame mt-8 p-5">
+        <Corners />
+        <div className="kicker">1 · Baseline hotel</div>
+        <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
           Find the hotel on tripadvisor.com and paste the page link — e.g.
           …/Hotel_Review-g187147-d197685-Reviews-… (a city page link works too).
         </p>
@@ -192,13 +198,12 @@ export default function SetupPage() {
             onChange={(e) => setRef(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && lookup(ref)}
             placeholder="Paste a TripAdvisor hotel or city link"
-            className="w-full rounded-lg border px-3 py-2"
-            style={inputStyle}
+            className="input"
           />
           <button
             onClick={() => lookup(ref)}
             disabled={loading || !ref.trim()}
-            className="btn-accent px-4 py-2 text-sm disabled:opacity-50"
+            className="btn-accent px-4 py-2 text-[13px] disabled:opacity-45"
           >
             {loading ? "Looking…" : "Look up"}
           </button>
@@ -211,8 +216,9 @@ export default function SetupPage() {
       </section>
 
       {/* Step 2: tracked hotels */}
-      <section className="mt-8">
-        <h2 className="font-medium">2 · Hotels to track</h2>
+      <section className="card card--frame mt-5 p-5">
+        <Corners />
+        <div className="kicker">2 · Hotels to track</div>
 
         {picked.length > 0 && (
           <div className="mt-2">
@@ -228,16 +234,19 @@ export default function SetupPage() {
               {picked.map((h) => (
                 <li
                   key={h.hotelKey}
-                  className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
+                  className="flex items-center justify-between px-3 py-2 text-[13px]"
                   style={{
-                    borderColor: h.isMine ? "var(--accent)" : "var(--border)",
+                    border: `1px solid ${h.isMine ? "var(--accent)" : "var(--border)"}`,
                     background: "var(--surface)",
                   }}
                 >
                   <span>
                     {h.name}
                     {h.isMine && (
-                      <span className="btn-accent ml-2 rounded px-1.5 py-0.5 text-xs">
+                      <span
+                        className="ml-2 inline-flex px-2 py-0.5 text-[11px] font-medium"
+                        style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                      >
                         mine
                       </span>
                     )}
@@ -271,10 +280,9 @@ export default function SetupPage() {
             onChange={(e) => setAddUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addByUrl()}
             placeholder="Add a competitor by pasting its TripAdvisor link"
-            className="w-full rounded-lg border px-3 py-2 text-sm"
-            style={inputStyle}
+            className="input text-[13px]"
           />
-          <button onClick={addByUrl} className="btn-ghost px-4 py-2 text-sm">
+          <button onClick={addByUrl} className="btn-ghost px-4 py-2 text-[13px]">
             Add
           </button>
         </div>
@@ -285,8 +293,8 @@ export default function SetupPage() {
               Or pick from hotels in this location:
             </p>
             <ul
-              className="mt-1 max-h-80 space-y-1 overflow-y-auto rounded-lg border p-2"
-              style={{ borderColor: "var(--border)" }}
+              className="mt-1 max-h-80 space-y-1 overflow-y-auto p-2"
+              style={{ border: "1px solid var(--border)" }}
             >
               {found
                 .filter((h) => !picked.some((p) => p.hotelKey === h.hotelKey))
@@ -321,8 +329,9 @@ export default function SetupPage() {
       </section>
 
       {/* Step 3: options */}
-      <section className="mt-8">
-        <h2 className="font-medium">3 · Options</h2>
+      <section className="card card--frame mt-5 p-5">
+        <Corners />
+        <div className="kicker">3 · Options</div>
         <div className="mt-2 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <label className="text-sm">
             <span style={{ color: "var(--text-secondary)" }}>Profile name</span>
@@ -330,8 +339,7 @@ export default function SetupPage() {
               value={profileName}
               onChange={(e) => setProfileName(e.target.value)}
               placeholder="e.g. Candlewood — Pensacola"
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              style={inputStyle}
+              className="input mt-1"
             />
           </label>
           <label className="text-sm">
@@ -340,8 +348,7 @@ export default function SetupPage() {
               value={marketName}
               onChange={(e) => setMarketName(e.target.value)}
               placeholder="e.g. Pensacola, FL"
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              style={inputStyle}
+              className="input mt-1"
             />
           </label>
           <label className="text-sm">
@@ -349,8 +356,7 @@ export default function SetupPage() {
             <select
               value={currency}
               onChange={(e) => setCurrency(e.target.value)}
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              style={inputStyle}
+              className="input mt-1"
             >
               {CURRENCIES.map((c) => (
                 <option key={c}>{c}</option>
@@ -365,8 +371,7 @@ export default function SetupPage() {
               max={120}
               value={horizonDays}
               onChange={(e) => setHorizonDays(Number(e.target.value))}
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              style={inputStyle}
+              className="input mt-1"
             />
           </label>
         </div>
@@ -378,8 +383,7 @@ export default function SetupPage() {
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={3}
-            className="mt-1 w-full rounded-lg border px-3 py-2"
-            style={inputStyle}
+            className="input mt-1"
           />
         </label>
       </section>
@@ -391,7 +395,7 @@ export default function SetupPage() {
       )}
 
       <div className="mt-8 flex gap-3">
-        <button onClick={save} disabled={saving} className="btn-accent px-5 py-2.5 disabled:opacity-50">
+        <button onClick={save} disabled={saving} className="btn-accent px-5 py-2.5 disabled:opacity-45">
           {saving ? "Saving…" : "Save & open dashboard"}
         </button>
         <button onClick={() => router.push("/")} className="btn-ghost px-5 py-2.5">

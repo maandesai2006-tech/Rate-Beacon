@@ -96,44 +96,84 @@ export interface XoteloRates {
   available: boolean;
 }
 
-// Chain brand sites as they appear in TripAdvisor's compare list, mapped to
-// the sub-brand names that identify them in a hotel's own name.
-const BRAND_FAMILIES: [string, string[]][] = [
-  ["ihg", ["candlewood", "holiday inn", "staybridge", "crowne plaza", "intercontinental", "avid", "even hotel", "hotel indigo", "kimpton", "ihg"]],
-  ["marriott", ["marriott", "courtyard", "residence inn", "towneplace", "fairfield", "springhill", "four points", "sheraton", "westin", "aloft", "ac hotel", "moxy", "element"]],
-  ["hilton", ["hilton", "hampton", "home2", "homewood", "tru by", "doubletree", "embassy suites", "garden inn"]],
-  ["hyatt", ["hyatt"]],
-  ["wyndham", ["wyndham", "la quinta", "days inn", "super 8", "baymont", "microtel", "ramada", "travelodge", "howard johnson", "wingate"]],
-  ["choicehotels", ["comfort inn", "comfort suites", "quality inn", "sleep inn", "clarion", "econo lodge", "mainstay", "rodeway", "cambria", "woodspring"]],
-  ["bestwestern", ["best western", "surestay"]],
-  ["redroof", ["red roof"]],
-  ["extendedstayamerica", ["extended stay america"]],
-  ["motel6", ["motel 6"]],
-  ["sonesta", ["sonesta"]],
+// Sub-brands that identify a chain in a hotel's own name, keyed by the
+// seller labels TripAdvisor's compare list uses for that chain's own site.
+// The list carries either the parent ("IHG", "Marriott") or the sub-brand
+// itself ("Courtyard", "Residence Inn"), so both are matched.
+const BRAND_FAMILIES: [string[], string[]][] = [
+  [
+    ["ihg", "intercontinental hotels group"],
+    ["candlewood", "holiday inn", "staybridge", "crowne plaza", "intercontinental", "avid", "even hotel", "hotel indigo", "kimpton", "atwell", "vignette"],
+  ],
+  [
+    ["marriott", "bonvoy"],
+    ["marriott", "courtyard", "residence inn", "towneplace", "fairfield", "springhill", "four points", "sheraton", "westin", "aloft", "ac hotel", "moxy", "element", "delta hotels", "st regis", "w hotel", "ritz"],
+  ],
+  [
+    ["hilton", "hilton honors"],
+    ["hilton", "hampton", "home2", "homewood", "tru by", "doubletree", "embassy suites", "garden inn", "canopy", "tapestry", "curio", "signia", "spark by"],
+  ],
+  [["hyatt"], ["hyatt", "hyatt place", "hyatt house", "andaz", "thompson hotels", "caption by"]],
+  [
+    ["wyndham", "by wyndham"],
+    ["wyndham", "la quinta", "days inn", "super 8", "baymont", "microtel", "ramada", "travelodge", "howard johnson", "wingate", "hawthorn", "americinn", "trademark"],
+  ],
+  [
+    ["choice hotels", "choicehotels", "choice"],
+    ["comfort inn", "comfort suites", "quality inn", "sleep inn", "clarion", "econo lodge", "mainstay", "rodeway", "cambria", "woodspring", "suburban studios", "everhome"],
+  ],
+  [["best western", "bestwestern"], ["best western", "surestay", "glo by", "aiden by", "sadie hotel"]],
+  [["red roof", "redroof"], ["red roof", "hometowne studios"]],
+  [["extended stay america", "extendedstayamerica", "esa"], ["extended stay america"]],
+  [["motel 6", "motel6", "g6 hospitality"], ["motel 6", "studio 6"]],
+  [["sonesta"], ["sonesta", "simply suites", "sonesta select", "sonesta es suites"]],
+  [["drury"], ["drury"]],
+  [["omni"], ["omni"]],
+  [["loews"], ["loews"]],
 ];
 
 function normalize(s: string): string {
   return s
     .toLowerCase()
-    .replace(/\.(com|co\.uk|net)\b/g, "")
+    .replace(/\.(com|co\.uk|net|org)\b/g, " ")
     .replace(/[^a-z0-9 ]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-// Is this quote the hotel's own brand site? Match either the generic
-// "official site" label or the chain site that owns the hotel's sub-brand.
+// Known OTA/meta sellers — never a brand site, even if a name collides with a
+// chain token (e.g. "Hotels.com" vs a hotel literally named "… Hotel").
+const OTA_SELLERS = [
+  "booking", "expedia", "agoda", "trip", "hotels", "priceline", "orbitz",
+  "travelocity", "vio", "hotwire", "kayak", "trivago", "ebookers", "algotels",
+  "getaroom", "zenhotels", "hostelworld", "official hotel", "prestigia",
+  "traveluro", "reservations", "amoma", "mytrip", "supertravel", "destinia",
+  "findhotel", "stayforlong", "hotelscombined", "cheaptickets", "onetravel",
+];
+
+function isOta(q: string): boolean {
+  return OTA_SELLERS.some((o) => q === o || q.startsWith(`${o} `));
+}
+
+// Is this quote the hotel's own brand site? Matches the generic "official
+// site" label, the chain site that owns the hotel's sub-brand, or a seller
+// named after a sub-brand appearing in the hotel's own name.
 export function isDirectQuote(quoteName: string, hotelName: string): boolean {
   const q = normalize(quoteName);
   if (!q) return false;
-  if (q.includes("official")) return true;
   const h = normalize(hotelName);
-  for (const [site, subBrands] of BRAND_FAMILIES) {
-    if (q.includes(site) || site.includes(q.replace(/ /g, ""))) {
-      if (subBrands.some((b) => h.includes(b))) return true;
-    }
+  if (q.includes("official site") || q === "official") return true;
+  if (isOta(q)) return false;
+
+  for (const [sellerLabels, subBrands] of BRAND_FAMILIES) {
+    const hotelInFamily = subBrands.some((b) => h.includes(b));
+    if (!hotelInFamily) continue;
+    // Seller is the chain's parent site ("IHG", "Marriott", "Choice Hotels").
+    if (sellerLabels.some((label) => q === label || q.includes(label))) return true;
+    // Seller is the sub-brand itself ("Courtyard", "Residence Inn").
+    if (subBrands.some((b) => q === b || q.includes(b))) return true;
   }
-  // e.g. a quote literally named "Candlewood Suites" matching the hotel name
+  // Fallback: the seller name appears verbatim in the hotel's own name.
   return q.length > 3 && h.includes(q);
 }
 

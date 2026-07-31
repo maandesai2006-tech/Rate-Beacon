@@ -143,8 +143,11 @@ export default function Dashboard() {
   if (error) {
     return (
       <Shell>
-        <div className="card mt-10 p-6" style={{ borderColor: "var(--status-critical)" }}>
-          <h2 className="font-semibold">Something went wrong</h2>
+        <div className="card card--frame mt-10 p-6" style={{ borderColor: "var(--status-critical)" }}>
+          <Corners tone="var(--status-critical)" />
+          <h2 className="text-[15px]" style={{ color: "var(--status-critical)" }}>
+            Something went wrong
+          </h2>
           <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
             {error}
           </p>
@@ -166,13 +169,14 @@ export default function Dashboard() {
   if (!data.configured) {
     return (
       <Shell>
-        <div className="card mt-10 p-8 text-center">
-          <h2 className="text-lg font-semibold">Welcome to Rate Beacon</h2>
+        <div className="card card--frame mt-10 p-8 text-center">
+          <Corners />
+          <h2 className="text-lg">Welcome to Rate Beacon</h2>
           <p className="mx-auto mt-2 max-w-md text-sm" style={{ color: "var(--text-secondary)" }}>
             Create a hotel profile: pick the baseline hotel and the competitor
             set to shop against, night by night.
           </p>
-          <Link href="/setup" className="btn-accent mt-5 inline-block px-5 py-2.5">
+          <Link href="/setup" className="btn-accent mt-5 inline-flex px-5 py-2.5">
             Create a profile →
           </Link>
         </div>
@@ -206,21 +210,25 @@ export default function Dashboard() {
   return (
     <Shell
       header={
-        <div className="flex flex-wrap items-center gap-3">
+        <div
+          className="flex flex-wrap items-center gap-3 pb-3.5"
+          style={{ borderBottom: "1px solid var(--border)" }}
+        >
           <div className="mr-auto">
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-base"
-                style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
-                aria-hidden
-              >
-                ◆
-              </span>
+            <div className="flex items-center gap-2.5">
+              <Mark />
               {profiles.length > 1 ? (
                 <select
                   value={profileId ?? profiles[0]?.id}
                   onChange={(e) => setProfileId(Number(e.target.value))}
-                  className="btn-ghost px-2 py-1.5 text-lg font-semibold"
+                  style={{
+                    font: "600 20px var(--font-heading)",
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--text-primary)",
+                    padding: "2px 0",
+                    cursor: "pointer",
+                  }}
                 >
                   {profiles.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -229,7 +237,7 @@ export default function Dashboard() {
                   ))}
                 </select>
               ) : (
-                <h1 className="text-xl font-semibold">{profile.name}</h1>
+                <h1 style={{ font: "600 20px var(--font-heading)" }}>{profile.name}</h1>
               )}
             </div>
             <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
@@ -240,16 +248,16 @@ export default function Dashboard() {
                 : "no rates fetched yet"}
             </p>
           </div>
-          <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-sm">
+          <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-[13px]">
             Edit profile
           </Link>
-          <Link href="/setup?new=1" className="btn-ghost px-3 py-1.5 text-sm">
+          <Link href="/setup?new=1" className="btn-ghost px-3 py-1.5 text-[13px]">
             + New profile
           </Link>
           <button
             onClick={refresh}
             disabled={refreshing}
-            className="btn-accent px-4 py-1.5 text-sm disabled:opacity-60"
+            className="btn-accent px-4 py-1.5 text-[13px]"
           >
             {refreshing ? "Fetching… (takes a few minutes)" : "Refresh rates"}
           </button>
@@ -263,9 +271,11 @@ export default function Dashboard() {
       )}
 
       {!hasAnyData && (
-        <div className="card mt-6 p-5 text-sm">
-          No rates yet — hit <b>Refresh rates</b> to fetch live prices for the
-          next {profile.horizon_days} days. A daily job keeps it fresh afterwards.
+        <div className="card card--frame mt-6 p-5 text-sm">
+          <Corners />
+          <div className="kicker mb-1.5">No rates yet</div>
+          Hit <b>Refresh rates</b> to fetch live prices for the next{" "}
+          {profile.horizon_days} days. A daily job keeps it fresh afterwards.
         </div>
       )}
 
@@ -295,7 +305,8 @@ export default function Dashboard() {
           value={stats.avg30 != null ? fmt(stats.avg30) : "—"}
           label="avg market rate, next 30 nights"
         />
-        <div className="card p-4">
+        <div className="card card--frame px-4 py-3.5">
+          <Corners />
           <div className="flex h-10 items-end gap-1" aria-label="Typical market rate by weekday">
             {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
               const v = weekdayAvg.find((w) => w.weekday === wd)?.avgMedian ?? null;
@@ -319,7 +330,7 @@ export default function Dashboard() {
       </div>
 
       {/* View tabs */}
-      <div className="mt-6 flex gap-1">
+      <div className="mt-6 flex gap-1.5" style={{ borderBottom: "1px solid var(--border)" }}>
         {(
           [
             ["grid", "Rate grid"],
@@ -335,26 +346,51 @@ export default function Dashboard() {
 
       {tab === "grid" && (
         <>
-          <div className="card mt-3 overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-sm">
+          <div className="mt-4 overflow-x-auto" style={{ border: "1px solid var(--border)" }}>
+            <table className="w-full min-w-[1100px] border-collapse text-[13px]">
               <thead>
                 <tr
-                  className="sticky top-0 z-10 text-left text-xs"
-                  style={{ background: "var(--surface)", color: "var(--text-secondary)" }}
+                  className="sticky top-0 z-10 text-left"
+                  style={{ background: "var(--surface)" }}
                 >
-                  <th className="px-3 py-2.5 font-medium">Check-in</th>
-                  <th className="px-3 py-2.5 font-semibold" style={{ color: "var(--accent)" }}>
+                  <th
+                    className="th-label sticky left-0 px-3 py-2.5"
+                    style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}
+                  >
+                    Check-in
+                  </th>
+                  <th
+                    className="th-label px-3 py-2.5"
+                    style={{
+                      color: "var(--accent)",
+                      borderBottom: "1px solid var(--border)",
+                      boxShadow: "inset 2px 0 0 var(--accent)",
+                    }}
+                  >
                     {myHotel ? myHotel.name : "My rate"}
                   </th>
                   {comps.map((h) => (
-                    <th key={h.hotel_id} className="max-w-32 truncate px-3 py-2.5 font-medium" title={h.name}>
+                    <th
+                      key={h.hotel_id}
+                      className="th-label max-w-32 truncate px-3 py-2.5"
+                      style={{ borderBottom: "1px solid var(--border)" }}
+                      title={h.rating != null ? `${h.name} · ${h.rating.toFixed(1)} (${h.review_count ?? "–"})` : h.name}
+                    >
                       {h.name}
                     </th>
                   ))}
-                  <th className="px-3 py-2.5 text-right font-medium">Median</th>
-                  <th className="px-3 py-2.5 font-medium">Demand</th>
-                  <th className="px-3 py-2.5 font-medium">Advice</th>
-                  <th className="px-3 py-2.5 font-medium">Context</th>
+                  <th className="th-label px-3 py-2.5 text-right" style={{ borderBottom: "1px solid var(--border)" }}>
+                    Median
+                  </th>
+                  <th className="th-label px-3 py-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
+                    Demand
+                  </th>
+                  <th className="th-label px-3 py-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
+                    Advice
+                  </th>
+                  <th className="th-label px-3 py-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
+                    Context
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -392,10 +428,10 @@ export default function Dashboard() {
               ["bin-1", "+5…15%"],
               ["bin-2", "≥ +15%"],
             ].map(([cls, label]) => (
-              <span key={cls} className="inline-flex items-center gap-1">
+              <span key={cls} className="inline-flex items-center gap-1.5">
                 <span
-                  className={`${cls} inline-block h-3.5 w-3.5 rounded border`}
-                  style={{ borderColor: "var(--border)" }}
+                  className={`${cls} inline-block h-3.5 w-3.5`}
+                  style={{ border: "1px solid var(--border)" }}
                 />
                 {label}
               </span>
@@ -406,13 +442,15 @@ export default function Dashboard() {
       )}
 
       {tab === "trends" && (
-        <div className="card mt-3 p-5">
+        <div className="card card--frame mt-4 p-5">
+          <Corners />
           <TrendChart rows={rows} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
         </div>
       )}
 
       {tab === "ladder" && (
-        <div className="card mt-3 p-5">
+        <div className="card card--frame mt-4 p-5">
+          <Corners />
           <RateLadder rows={rows} hotels={hotels} fmt={fmt} />
         </div>
       )}
@@ -420,10 +458,11 @@ export default function Dashboard() {
       {/* Tooltip layer */}
       {tooltip && (
         <div
-          className="card pointer-events-none fixed z-50 max-w-72 px-3 py-2 text-xs"
+          className="card pointer-events-none fixed z-50 max-w-[280px] px-3 py-2.5 text-xs"
           style={{
             left: Math.min(tooltip.x + 14, typeof window !== "undefined" ? window.innerWidth - 300 : tooltip.x),
             top: tooltip.y + 14,
+            boxShadow: "var(--shadow)",
           }}
         >
           {tooltip.lines.map((l, i) => (
@@ -461,13 +500,49 @@ function Shell({
   );
 }
 
+// Blueprint registration marks for framed cards.
+function Corners({ tone }: { tone?: string }) {
+  const style = tone ? { color: tone } : undefined;
+  return (
+    <>
+      <i className="corner tl" style={style} aria-hidden />
+      <i className="corner tr" style={style} aria-hidden />
+      <i className="corner bl" style={style} aria-hidden />
+      <i className="corner br" style={style} aria-hidden />
+    </>
+  );
+}
+
+function Mark() {
+  return (
+    <span
+      aria-hidden
+      className="inline-flex h-[30px] w-[30px] items-center justify-center"
+      style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M12 2l7 4v6c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6z" />
+        <path d="M12 8v5" />
+        <circle cx="12" cy="16" r="0.6" fill="currentColor" />
+      </svg>
+    </span>
+  );
+}
+
 function StatTile({ value, label, tone }: { value: string; label: string; tone?: string }) {
   return (
-    <div className="card p-4">
-      <div className="text-2xl font-semibold" style={tone ? { color: tone } : undefined}>
+    <div className="card card--frame px-4 py-3.5">
+      <Corners />
+      <div
+        className="tabular-nums"
+        style={{
+          font: "600 30px/1.1 var(--font-heading)",
+          color: tone ?? "var(--text-primary)",
+        }}
+      >
         {value}
       </div>
-      <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>
+      <p className="mt-1 text-xs leading-snug" style={{ color: "var(--text-secondary)" }}>
         {label}
       </p>
     </div>
@@ -541,7 +616,14 @@ function GridRowView({
         background: weekend ? "color-mix(in oklab, var(--surface-2) 55%, transparent)" : undefined,
       }}
     >
-      <td className="whitespace-nowrap px-3 py-1.5">
+      <td
+        className="sticky left-0 whitespace-nowrap px-3 py-1.5"
+        style={{
+          background: weekend
+            ? "color-mix(in oklab, var(--surface-2) 55%, var(--surface))"
+            : "var(--surface)",
+        }}
+      >
         <button onClick={onOpen} className="underline-offset-2 hover:underline" title="Open price history">
           {dateLabel(row.date)}
         </button>
@@ -549,7 +631,7 @@ function GridRowView({
 
       {/* My rate (editable) */}
       <td
-        className={`${binOf(row.myPrice, row.median)} cursor-pointer px-3 py-1.5 font-medium tabular-nums`}
+        className={`${binOf(row.myPrice, row.median)} cursor-pointer px-3 py-1.5 font-semibold tabular-nums`}
         style={{ boxShadow: "inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent)" }}
         onClick={() => !editing && onStartEdit()}
         title="Click to set your rate for this night"
@@ -564,8 +646,8 @@ function GridRowView({
               if (e.key === "Enter") onEditSave();
               if (e.key === "Escape") onEditCancel();
             }}
-            className="w-20 rounded border px-1 py-0.5 text-sm"
-            style={{ borderColor: "var(--accent)", background: "var(--surface)" }}
+            className="input w-[78px] px-1.5 py-0.5 text-[13px]"
+            style={{ minHeight: "auto", borderColor: "var(--accent)" }}
             placeholder="price"
           />
         ) : row.myPrice != null ? (
@@ -619,13 +701,13 @@ function GridRowView({
           <span className="inline-flex items-center gap-1.5">
             <span className="w-6 text-right text-xs tabular-nums">{row.demand}</span>
             <span
-              className="inline-block h-2 w-14 overflow-hidden rounded-full"
+              className="inline-block h-[7px] w-14 overflow-hidden"
               style={{ background: "var(--gridline)" }}
               role="img"
               aria-label={`Demand ${row.demand} of 100`}
             >
               <span
-                className="block h-full rounded-full"
+                className="block h-full"
                 style={{ width: `${row.demand}%`, background: "var(--series-1)" }}
               />
             </span>
@@ -643,10 +725,10 @@ function GridRowView({
       <td className="whitespace-nowrap px-3 py-1.5">
         {advice ? (
           <span
-            className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold"
+            className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold"
             style={{
               color: advice.color,
-              background: "color-mix(in oklab, currentColor 12%, transparent)",
+              background: "color-mix(in oklab, currentColor 14%, transparent)",
             }}
             title={[
               row.momentumPct != null
@@ -712,7 +794,7 @@ function GridRowView({
 function ContextChip({ label, title, tone }: { label: string; title?: string; tone?: string }) {
   return (
     <span
-      className="rounded-md px-1.5 py-0.5 font-medium"
+      className="inline-flex px-[7px] py-0.5 text-[11px] font-medium"
       style={{
         color: tone ?? "var(--text-secondary)",
         background: "color-mix(in oklab, currentColor 10%, transparent)",
@@ -797,22 +879,22 @@ function TrendChart({
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-4 text-xs" style={{ color: "var(--text-secondary)" }}>
+      <div className="flex flex-wrap items-center gap-[18px] text-xs" style={{ color: "var(--text-secondary)" }}>
         <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-5 rounded" style={{ background: "var(--accent)" }} />
+          <span className="inline-block h-0.5 w-[18px]" style={{ background: "var(--accent)" }} />
           {myName}
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span
-            className="inline-block h-0.5 w-5 rounded"
-            style={{ borderTop: "2px dashed var(--text-muted)" }}
+            className="inline-block w-[18px]"
+            style={{ height: 0, borderTop: "2px dashed var(--text-muted)" }}
           />
           market median
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span
-            className="inline-block h-3 w-5 rounded"
-            style={{ background: "color-mix(in oklab, var(--series-1) 16%, transparent)" }}
+            className="inline-block h-2.5 w-[18px]"
+            style={{ background: "var(--accent-soft)" }}
           />
           market min–max
         </span>
@@ -840,7 +922,7 @@ function TrendChart({
             </g>
           ))}
           {bandSegs.map((d, i) => (
-            <path key={i} d={d} fill="color-mix(in oklab, var(--series-1) 16%, transparent)" />
+            <path key={i} d={d} fill="var(--accent-soft)" />
           ))}
           <path d={linePath((r) => r.median)} fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeDasharray="5 4" />
           <path d={linePath((r) => r.myPrice)} fill="none" stroke="var(--accent)" strokeWidth="2.5" />
@@ -871,7 +953,8 @@ function TrendChart({
           )}
         </svg>
         {hoverRow && (
-          <div className="card pointer-events-none absolute top-2 right-2 px-3 py-2 text-xs">
+          <div className="card card--frame pointer-events-none absolute top-2 right-2 px-3 py-2 text-xs" style={{ background: "var(--surface)" }}>
+            <Corners />
             <div className="font-semibold">{dateLabel(hoverRow.date)}</div>
             <div style={{ color: "var(--text-secondary)" }}>
               {hoverRow.myPrice != null && <>You: {fmt(hoverRow.myPrice)} · </>}
@@ -917,10 +1000,19 @@ function RateLadder({
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3">
-        <button className="btn-ghost px-2.5 py-1 text-sm" onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0}>
+        <button
+          className="btn-ghost h-9 w-9 text-sm disabled:opacity-45"
+          onClick={() => setIdx(Math.max(0, idx - 1))}
+          disabled={idx === 0}
+          aria-label="Previous night"
+        >
           ←
         </button>
-        <select value={idx} onChange={(e) => setIdx(Number(e.target.value))} className="btn-ghost px-2 py-1.5 text-sm font-medium">
+        <select
+          value={idx}
+          onChange={(e) => setIdx(Number(e.target.value))}
+          className="btn-ghost px-2.5 py-1.5 text-[13px]"
+        >
           {rows.map((r, i) => (
             <option key={r.date} value={i}>
               {dateLabel(r.date)}
@@ -928,13 +1020,14 @@ function RateLadder({
           ))}
         </select>
         <button
-          className="btn-ghost px-2.5 py-1 text-sm"
+          className="btn-ghost h-9 w-9 text-sm disabled:opacity-45"
           onClick={() => setIdx(Math.min(rows.length - 1, idx + 1))}
           disabled={idx >= rows.length - 1}
+          aria-label="Next night"
         >
           →
         </button>
-        <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+        <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
           {myRank >= 0 && (
             <>
               You&apos;re <b>#{myRank + 1} of {priced.length}</b> priced hotels (most expensive first)
@@ -947,7 +1040,7 @@ function RateLadder({
       <ul className="mt-4 space-y-1.5">
         {entries.map(({ hotel, price, soldOut, direct }) => (
           <li key={hotel.hotel_id} className="flex items-center gap-3">
-            <span className="w-64 truncate text-sm" title={hotel.name}>
+            <span className="w-[230px] truncate text-[13px]" title={hotel.name}>
               <span
                 style={{
                   fontWeight: hotel.is_mine ? 700 : 400,
@@ -963,10 +1056,10 @@ function RateLadder({
                 </span>
               )}
             </span>
-            <div className="relative h-6 flex-1 overflow-hidden rounded-md" style={{ background: "var(--surface-2)" }}>
+            <div className="relative h-[22px] flex-1 overflow-hidden" style={{ background: "var(--surface-2)" }}>
               {price != null && (
                 <div
-                  className="h-full rounded-md"
+                  className="h-full"
                   style={{
                     width: `${(price / maxPrice) * 100}%`,
                     background: hotel.is_mine
@@ -976,7 +1069,7 @@ function RateLadder({
                 />
               )}
             </div>
-            <span className="w-24 text-right text-sm tabular-nums">
+            <span className="w-[90px] text-right text-[13px] tabular-nums">
               {price != null ? (
                 <>
                   {fmt(price)}
@@ -1054,8 +1147,8 @@ function HistoryDrawer({
         aria-label={`Price history for ${dateLabel(row.date)}`}
       >
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">{dateLabel(row.date)}</h2>
-          <button onClick={onClose} className="btn-ghost px-2.5 py-1 text-sm">
+          <h2 className="text-[17px]">{dateLabel(row.date)}</h2>
+          <button onClick={onClose} className="btn-ghost px-2.5 py-1 text-xs">
             Close
           </button>
         </div>
@@ -1074,11 +1167,11 @@ function HistoryDrawer({
               return (
                 <li
                   key={h.hotel_id}
-                  className="rounded-xl border p-3"
-                  style={{ borderColor: h.is_mine ? "var(--accent)" : "var(--border)" }}
+                  className="p-3"
+                  style={{ border: `1px solid ${h.is_mine ? "var(--accent)" : "var(--border)"}` }}
                 >
                   <div className="flex items-baseline justify-between gap-2">
-                    <span className="truncate text-sm font-medium">
+                    <span className="truncate text-[13px] font-semibold">
                       {h.name}
                       {h.is_mine && (
                         <span className="ml-1.5 text-xs" style={{ color: "var(--accent)" }}>
@@ -1086,7 +1179,7 @@ function HistoryDrawer({
                         </span>
                       )}
                     </span>
-                    <span className="whitespace-nowrap text-sm tabular-nums">
+                    <span className="whitespace-nowrap text-[13px] tabular-nums">
                       {c?.price != null ? (
                         fmt(c.price)
                       ) : c?.capturedOn != null ? (

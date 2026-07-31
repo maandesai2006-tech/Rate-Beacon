@@ -1,64 +1,74 @@
 @import "tailwindcss";
 
-/* Design tokens. Chrome (buttons, highlights, my-hotel identity) uses an
-   indigo accent; data encodings keep the validated viz palette: diverging
-   blue↔red vs market median, sequential blue for demand magnitude, reserved
-   status colors for advice. */
+/* Industry design system — tokens ported from the approved design spec.
+   Chrome (buttons, tabs, the baseline hotel's identity) is one steel-blue
+   accent; data encodings keep their reserved roles: diverging blue↔red vs
+   market median, one sequential hue for demand, status colors for advice
+   (always paired with a text label). */
 :root {
   color-scheme: light;
-  --page: #f6f7fb;
+  --page: #f2f2f3;
   --surface: #ffffff;
-  --surface-2: #eef0f8;
-  --text-primary: #101223;
-  --text-secondary: #4d5166;
-  --text-muted: #8a8ea3;
-  --gridline: #e6e8f2;
-  --baseline: #c9cddd;
-  --border: rgba(16, 18, 35, 0.08);
-  --shadow: 0 1px 2px rgba(16, 18, 35, 0.05), 0 8px 24px -12px rgba(16, 18, 35, 0.12);
+  --surface-2: #eceded;
+  --text-primary: #1d1f20;
+  --text-secondary: #5d5d60;
+  --text-muted: #82838a;
+  --gridline: #e6e6e8;
+  --baseline: #c7c8cb;
+  --border: rgba(29, 31, 32, 0.12);
+  --shadow: 0 1px 2px rgba(29, 31, 32, 0.08), 0 8px 20px -12px rgba(29, 31, 32, 0.16);
 
-  --accent: #4f46e5;
-  --accent-soft: rgba(79, 70, 229, 0.1);
+  --accent: #5980a6;
+  --accent-600: #597ea3;
+  --accent-700: #416180;
+  --accent-soft: rgba(89, 128, 166, 0.14);
   --accent-ink: #ffffff;
 
-  --series-1: #2a78d6;      /* demand bar, market marks */
-  --div-low: #2a78d6;       /* cheaper than market */
-  --div-mid: #eef0f8;       /* at market */
-  --div-high: #e34948;      /* pricier than market */
+  --series-1: #5980a6;
+  --div-low: #5980a6;
+  --div-mid: #eceded;
+  --div-high: #a15a52;
 
-  --status-good: #0ca30c;
-  --status-warning: #b97900;
-  --status-serious: #c05621;
-  --status-critical: #d03b3b;
-  --delta-good-text: #006300;
+  --status-good: #4c7a58;
+  --status-warning: #9c7a3d;
+  --status-serious: #a8623f;
+  --status-critical: #a14a45;
+  --delta-good-text: #3c6146;
+
+  --font-heading: "Barlow Condensed", system-ui, sans-serif;
+  --font-body: "Barlow", system-ui, sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --page: #0e0f16;
-    --surface: #171923;
-    --surface-2: #1f2230;
-    --text-primary: #f4f5fa;
-    --text-secondary: #b6bacb;
-    --text-muted: #7d8196;
-    --gridline: #262a3a;
-    --baseline: #3a3f55;
-    --border: rgba(255, 255, 255, 0.09);
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    --page: #1b1c1e;
+    --surface: #232426;
+    --surface-2: #2a2b2e;
+    --text-primary: #f2f2f3;
+    --text-secondary: #b6b7ba;
+    --text-muted: #84858a;
+    --gridline: #323335;
+    --baseline: #4a4b4e;
+    --border: rgba(242, 242, 243, 0.12);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 10px 26px -14px rgba(0, 0, 0, 0.6);
 
-    --accent: #818cf8;
-    --accent-soft: rgba(129, 140, 248, 0.16);
-    --accent-ink: #101223;
+    --accent: #8bacc9;
+    --accent-600: #a9c5db;
+    --accent-700: #c3d8e8;
+    --accent-soft: rgba(139, 172, 201, 0.18);
+    --accent-ink: #12181d;
 
-    --series-1: #3987e5;
-    --div-low: #3987e5;
-    --div-mid: #262a3a;
-    --div-high: #e66767;
+    --series-1: #8bacc9;
+    --div-low: #7fa3c4;
+    --div-mid: #2a2b2e;
+    --div-high: #c17a72;
 
-    --status-warning: #fab219;
-    --status-serious: #ec835a;
-    --delta-good-text: #0ca30c;
+    --status-good: #7fae8b;
+    --status-warning: #d0a35f;
+    --status-serious: #d98f66;
+    --status-critical: #d97d78;
+    --delta-good-text: #8fc49b;
   }
 }
 
@@ -66,47 +76,145 @@ html,
 body {
   background: var(--page);
   color: var(--text-primary);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.12;
+}
+
+/* Blueprint framing: transparent card, hairline border, square corners,
+   registration marks rendered by the <Corners /> component. */
 .card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
+  border-radius: 0;
+}
+.card--frame {
+  background: transparent;
+}
+.corner {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  color: var(--baseline);
+  pointer-events: none;
+}
+.corner::before,
+.corner::after {
+  content: "";
+  position: absolute;
+  background: currentColor;
+}
+.corner::before { left: 5px; top: 0; width: 1px; height: 100%; }
+.corner::after { top: 5px; left: 0; width: 100%; height: 1px; }
+.corner.tl { top: -6px; left: -6px; }
+.corner.tr { top: -6px; right: -6px; }
+.corner.bl { bottom: -6px; left: -6px; }
+.corner.br { bottom: -6px; right: -6px; }
+
+.kicker {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
 }
 
 .btn-accent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   background: var(--accent);
   color: var(--accent-ink);
-  border-radius: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  font-family: var(--font-heading);
   font-weight: 600;
+  cursor: pointer;
 }
+.btn-accent:hover { background: var(--accent-600); border-color: var(--accent-600); }
+.btn-accent:active { background: var(--accent-700); }
+.btn-accent:disabled { opacity: 0.45; cursor: not-allowed; }
+
 .btn-ghost {
-  border: 1px solid var(--baseline);
-  border-radius: 10px;
-  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-heading);
+  font-weight: 600;
+  cursor: pointer;
 }
+.btn-ghost:hover { background: color-mix(in srgb, var(--text-primary) 7%, transparent); }
+.btn-ghost:active { background: color-mix(in srgb, var(--text-primary) 14%, transparent); }
 
 .tab {
-  border-radius: 9999px;
-  padding: 0.375rem 0.875rem;
-  font-size: 0.875rem;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  font-family: var(--font-body);
   font-weight: 500;
+  font-size: 13px;
   color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
 }
 .tab[data-active="true"] {
+  font-family: var(--font-heading);
+  font-weight: 600;
   background: var(--accent);
   color: var(--accent-ink);
+  border-color: var(--accent);
 }
 .tab:not([data-active="true"]):hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
 }
 
-/* Diverging price-vs-market bins (background tints; text stays primary ink). */
-.bin--2 { background: color-mix(in oklab, var(--div-low) 32%, var(--surface)); }
-.bin--1 { background: color-mix(in oklab, var(--div-low) 15%, var(--surface)); }
+.input {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  caret-color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.input:hover { border-color: color-mix(in srgb, var(--text-primary) 45%, transparent); }
+.input:focus-visible { border-color: var(--accent); outline: none; }
+
+.th-label {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+/* Diverging price-vs-market bins (background tints; numbers stay printed). */
+.bin--2 { background: color-mix(in oklab, var(--div-low) 30%, var(--surface)); }
+.bin--1 { background: color-mix(in oklab, var(--div-low) 14%, var(--surface)); }
 .bin-0  { background: var(--div-mid); }
-.bin-1  { background: color-mix(in oklab, var(--div-high) 15%, var(--surface)); }
-.bin-2  { background: color-mix(in oklab, var(--div-high) 32%, var(--surface)); }
+.bin-1  { background: color-mix(in oklab, var(--div-high) 14%, var(--surface)); }
+.bin-2  { background: color-mix(in oklab, var(--div-high) 30%, var(--surface)); }
 .bin-na { background: var(--surface); color: var(--text-muted); }
