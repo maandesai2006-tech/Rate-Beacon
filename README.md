@@ -62,14 +62,16 @@ night two weeks out.
 1. Import the repo on [vercel.com](https://vercel.com). If it lives in a
    subfolder of a larger repo, set **Root Directory** to `rate-beacon`.
 2. Add the environment variables from [`.env.example`](.env.example):
-   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `APP_PASSWORD` (the dashboard
-   login), and `CRON_SECRET` (any long random string — protects the daily job).
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `CRON_SECRET` (any long
+   random string — protects the daily job).
 3. Deploy. `vercel.json` registers a **daily cron at 06:00 UTC** that snapshots
    all rates; Vercel authenticates it automatically with `CRON_SECRET`.
 
-Open the site → enter the password → **Set up your market** (paste your
-hotel's TripAdvisor link, add competitors) → hit **Refresh rates** once. From
-then on the daily job keeps the history building automatically.
+Open the site → **Create a profile** (paste the hotel's TripAdvisor link,
+add competitors) → hit **Refresh rates** once. From then on the daily job
+keeps the history building automatically. Profiles are per-baseline-hotel:
+each one bundles a hotel, its market, notes, and its own competitor set,
+switchable from the dashboard header.
 
 ### Local development
 
@@ -88,9 +90,10 @@ npm run dev                  # http://localhost:3000
 - **Hotel coverage**: any property with a TripAdvisor page that shows prices.
   If your own hotel isn't listed, leave "mine" unticked and type your rates
   straight into the *you* column — comparisons work the same.
-- **Prices are the cheapest OTA offer** for a 1-night, 2-adult stay — the same
-  "market rate" a guest comparison-shopping would see. Hover a cell to see
-  which OTA it came from.
+- **Prices prefer the brand site's rate** (IHG.com, Marriott.com, …) when
+  TripAdvisor's compare list carries it, falling back to the cheapest seller;
+  the cheapest quote and the full seller list are stored too (hover a cell).
+  A superscript "D" marks brand-direct rates.
 - **Demand & advice are heuristics** built only from observable signals (comp
   sold-outs, median momentum). They're a starting point for a pricing
   decision, not a revenue-management system.

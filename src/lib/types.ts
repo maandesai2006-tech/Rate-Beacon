@@ -1,26 +1,33 @@
-export interface Settings {
+export interface Profile {
   id: number;
+  name: string;
   hotel_name: string | null;
   city_code: string | null;
   city_name: string | null;
   currency: string;
   horizon_days: number;
   adults: number;
+  notes: string | null;
 }
 
 export interface Hotel {
   hotel_id: string;
   name: string;
   is_mine: boolean;
-  city_code: string | null;
-  latitude: number | null;
-  longitude: number | null;
+}
+
+export interface Quote {
+  name: string;
+  total: number;
 }
 
 export interface RateCell {
-  price: number | null;
+  price: number | null; // brand-direct when detected, else cheapest quote
+  priceLow: number | null; // cheapest quote
+  source: string | null;
+  direct: boolean;
+  offers: Quote[];
   available: boolean;
-  roomDesc: string | null;
   capturedOn: string | null;
 }
 
@@ -38,7 +45,7 @@ export interface GridRow {
   date: string; // check-in date YYYY-MM-DD
   cells: Record<string, RateCell>; // hotelId -> cell
   myPrice: number | null;
-  myPriceSource: "manual" | "amadeus" | null;
+  myPriceSource: "manual" | "live" | null;
   median: number | null;
   min: number | null;
   max: number | null;
@@ -51,7 +58,7 @@ export interface GridRow {
 }
 
 export interface GridResponse {
-  settings: Settings;
+  profile: Profile;
   hotels: Hotel[];
   rows: GridRow[];
   weekdayAvg: { weekday: number; avgMedian: number | null }[];

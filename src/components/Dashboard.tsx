@@ -7,6 +7,11 @@ import Sparkline from "@/components/Sparkline";
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
 
+interface ProfileStub {
+  id: number;
+  name: string;
+}
+
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function binOf(price: number | null, mkt: number | null): string {
@@ -35,9 +40,14 @@ interface TooltipState {
   lines: string[];
 }
 
+type Tab = "grid" | "trends" | "ladder";
+
 export default function Dashboard() {
+  const [profiles, setProfiles] = useState<ProfileStub[]>([]);
+  const [profileId, setProfileId] = useState<number | null>(null);
   const [data, setData] = useState<GridPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("grid");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
@@ -45,16 +55,28 @@ export default function Dashboard() {
   const [editingDate, setEditingDate] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
+  useEffect(() => {
+    fetch("/api/profiles")
+      .then((r) => r.json())
+      .then((j) => {
+        const list: ProfileStub[] = j.profiles ?? [];
+        setProfiles(list);
+        if (list.length > 0) setProfileId((cur) => cur ?? list[0].id);
+      })
+      .catch(() => {});
+  }, []);
+
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/grid");
+      const qs = profileId ? `?profileId=${profileId}` : "";
+      const res = await fetch(`/api/grid${qs}`);
       const text = await res.text();
       let j: GridPayload & { error?: string };
       try {
         j = JSON.parse(text);
       } catch {
         throw new Error(
-          `The server returned an unexpected ${res.status} response. This usually means environment variables are missing on the deployment — in Vercel, check SUPABASE_URL (no /rest/v1/ at the end) and SUPABASE_SERVICE_ROLE_KEY are set for Production, then redeploy.`
+          `The server returned an unexpected ${res.status} response. This usually means environment variables are missing on the deployment — in Vercel, check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set for Production, then redeploy.`
         );
       }
       if (!res.ok) throw new Error(j.error ?? `Failed to load (${res.status})`);
@@ -63,7 +85,7 @@ export default function Dashboard() {
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [profileId]);
 
   useEffect(() => {
     load();
@@ -96,20 +118,20 @@ export default function Dashboard() {
   }
 
   async function saveMyRate(date: string) {
+    if (!profileId) return;
     const price = editValue.trim() === "" ? null : Number(editValue);
     if (price != null && (Number.isNaN(price) || price < 0)) return;
     setEditingDate(null);
     await fetch("/api/my-rates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ checkIn: date, price }),
+      body: JSON.stringify({ profileId, checkIn: date, price }),
     });
     await load();
   }
 
   const fmt = useMemo(() => {
-    const currency =
-      data && data.configured ? data.settings.currency : "USD";
+    const currency = data && data.configured ? data.profile.currency : "USD";
     const f = new Intl.NumberFormat("en-US", {
       style: "currency",
       currency,
@@ -121,17 +143,10 @@ export default function Dashboard() {
   if (error) {
     return (
       <Shell>
-        <div
-          className="mt-10 rounded-xl border p-6"
-          style={{ borderColor: "var(--status-critical)", background: "var(--surface)" }}
-        >
+        <div className="card mt-10 p-6" style={{ borderColor: "var(--status-critical)" }}>
           <h2 className="font-semibold">Something went wrong</h2>
           <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
             {error}
-          </p>
-          <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>
-            If this is a fresh deploy, check that the Supabase environment
-            variables are set and that the database migration ran.
           </p>
         </div>
       </Shell>
@@ -151,28 +166,21 @@ export default function Dashboard() {
   if (!data.configured) {
     return (
       <Shell>
-        <div
-          className="mt-10 rounded-xl border p-8 text-center"
-          style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-        >
+        <div className="card mt-10 p-8 text-center">
           <h2 className="text-lg font-semibold">Welcome to Rate Beacon</h2>
           <p className="mx-auto mt-2 max-w-md text-sm" style={{ color: "var(--text-secondary)" }}>
-            Track what nearby hotels charge night by night, spot high-demand
-            dates, and see where your own rate sits against the market.
+            Create a hotel profile: pick the baseline hotel and the competitor
+            set to shop against, night by night.
           </p>
-          <Link
-            href="/setup"
-            className="mt-5 inline-block rounded-lg px-5 py-2.5 font-medium text-white"
-            style={{ background: "var(--accent)" }}
-          >
-            Set up your market →
+          <Link href="/setup" className="btn-accent mt-5 inline-block px-5 py-2.5">
+            Create a profile →
           </Link>
         </div>
       </Shell>
     );
   }
 
-  const { settings, hotels, rows, weekdayAvg, lastCapturedAt } = data;
+  const { profile, hotels, rows, weekdayAvg, lastCapturedAt } = data;
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
@@ -180,7 +188,6 @@ export default function Dashboard() {
   const next30 = rows.slice(0, 30);
   const stats = {
     raise: rows.filter((r) => r.advice === "raise").length,
-    low: rows.filter((r) => r.advice === "review_low").length,
     high: rows.filter((r) => r.advice === "review_high").length,
     hot: rows.filter((r) => (r.demand ?? 0) >= 40).length,
     avg30: (() => {
@@ -188,11 +195,7 @@ export default function Dashboard() {
       return m.length ? m.reduce((a, b) => a + b, 0) / m.length : null;
     })(),
   };
-  const maxWeekday = Math.max(
-    1,
-    ...weekdayAvg.map((w) => w.avgMedian ?? 0)
-  );
-
+  const maxWeekday = Math.max(1, ...weekdayAvg.map((w) => w.avgMedian ?? 0));
   const drawerRow = drawerDate ? rows.find((r) => r.date === drawerDate) ?? null : null;
 
   return (
@@ -200,31 +203,50 @@ export default function Dashboard() {
       header={
         <div className="flex flex-wrap items-center gap-3">
           <div className="mr-auto">
-            <h1 className="text-xl font-semibold">
-              {settings.hotel_name || "Rate Beacon"}
-            </h1>
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              {settings.city_name ?? settings.city_code} · {comps.length} competitor
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-base"
+                style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
+                aria-hidden
+              >
+                ◆
+              </span>
+              {profiles.length > 1 ? (
+                <select
+                  value={profileId ?? profiles[0]?.id}
+                  onChange={(e) => setProfileId(Number(e.target.value))}
+                  className="btn-ghost px-2 py-1.5 text-lg font-semibold"
+                >
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <h1 className="text-xl font-semibold">{profile.name}</h1>
+              )}
+            </div>
+            <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+              {profile.city_name ?? profile.city_code} · {comps.length} competitor
               {comps.length === 1 ? "" : "s"} ·{" "}
               {lastCapturedAt
-                ? `rates updated ${new Date(lastCapturedAt).toLocaleString()}`
+                ? `updated ${new Date(lastCapturedAt).toLocaleString()}`
                 : "no rates fetched yet"}
             </p>
           </div>
-          <Link
-            href="/setup"
-            className="rounded-lg border px-3 py-1.5 text-sm"
-            style={{ borderColor: "var(--baseline)" }}
-          >
-            Edit market
+          <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-sm">
+            Edit profile
+          </Link>
+          <Link href="/setup?new=1" className="btn-ghost px-3 py-1.5 text-sm">
+            + New profile
           </Link>
           <button
             onClick={refresh}
             disabled={refreshing}
-            className="rounded-lg px-4 py-1.5 text-sm font-medium text-white disabled:opacity-60"
-            style={{ background: "var(--accent)" }}
+            className="btn-accent px-4 py-1.5 text-sm disabled:opacity-60"
           >
-            {refreshing ? "Fetching rates… (can take a minute)" : "Refresh rates"}
+            {refreshing ? "Fetching… (takes a few minutes)" : "Refresh rates"}
           </button>
         </div>
       }
@@ -236,13 +258,9 @@ export default function Dashboard() {
       )}
 
       {!hasAnyData && (
-        <div
-          className="mt-6 rounded-xl border p-5 text-sm"
-          style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-        >
-          No rates in the database yet — hit <b>Refresh rates</b> to fetch live
-          prices for the next {settings.horizon_days} days. After the first
-          fetch, a daily job keeps this up to date automatically.
+        <div className="card mt-6 p-5 text-sm">
+          No rates yet — hit <b>Refresh rates</b> to fetch live prices for the
+          next {profile.horizon_days} days. A daily job keeps it fresh afterwards.
         </div>
       )}
 
@@ -263,10 +281,7 @@ export default function Dashboard() {
           value={stats.avg30 != null ? fmt(stats.avg30) : "—"}
           label="avg market rate, next 30 nights"
         />
-        <div
-          className="rounded-xl border p-4"
-          style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-        >
+        <div className="card p-4">
           <div className="flex h-10 items-end gap-1" aria-label="Typical market rate by weekday">
             {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
               const v = weekdayAvg.find((w) => w.weekday === wd)?.avgMedian ?? null;
@@ -289,101 +304,121 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Rate grid */}
-      <div
-        className="mt-6 overflow-x-auto rounded-xl border"
-        style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-      >
-        <table className="w-full min-w-[720px] border-collapse text-sm">
-          <thead>
-            <tr
-              className="sticky top-0 z-10 text-left text-xs"
-              style={{ background: "var(--surface)", color: "var(--text-secondary)" }}
-            >
-              <th className="px-3 py-2 font-medium">Check-in</th>
-              <th className="px-3 py-2 font-medium">
-                {myHotel ? myHotel.name : "My rate"}{" "}
-                <span style={{ color: "var(--text-muted)" }}>(you)</span>
-              </th>
-              {comps.map((h) => (
-                <th key={h.hotel_id} className="max-w-32 truncate px-3 py-2 font-medium" title={h.name}>
-                  {h.name}
-                </th>
-              ))}
-              <th className="px-3 py-2 text-right font-medium">Market median</th>
-              <th className="px-3 py-2 font-medium">Demand</th>
-              <th className="px-3 py-2 font-medium">Advice</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <GridRowView
-                key={r.date}
-                row={r}
-                comps={comps}
-                fmt={fmt}
-                editing={editingDate === r.date}
-                editValue={editValue}
-                onStartEdit={() => {
-                  setEditingDate(r.date);
-                  setEditValue(r.myPrice != null ? String(r.myPrice) : "");
-                }}
-                onEditChange={setEditValue}
-                onEditSave={() => saveMyRate(r.date)}
-                onEditCancel={() => setEditingDate(null)}
-                onOpen={() => setDrawerDate(r.date)}
-                onTooltip={setTooltip}
-              />
-            ))}
-          </tbody>
-        </table>
+      {/* View tabs */}
+      <div className="mt-6 flex gap-1">
+        {(
+          [
+            ["grid", "Rate grid"],
+            ["trends", "Trends"],
+            ["ladder", "Rate ladder"],
+          ] as [Tab, string][]
+        ).map(([t, label]) => (
+          <button key={t} className="tab" data-active={tab === t} onClick={() => setTab(t)}>
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* Color legend */}
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs" style={{ color: "var(--text-secondary)" }}>
-        <span>Cell color = price vs that night&apos;s market median:</span>
-        {[
-          ["bin--2", "≤ −15%"],
-          ["bin--1", "−15…−5%"],
-          ["bin-0", "±5%"],
-          ["bin-1", "+5…15%"],
-          ["bin-2", "≥ +15%"],
-        ].map(([cls, label]) => (
-          <span key={cls} className="inline-flex items-center gap-1">
-            <span
-              className={`${cls} inline-block h-3.5 w-3.5 rounded border`}
-              style={{ borderColor: "var(--border)" }}
-            />
-            {label}
-          </span>
-        ))}
-        <span className="inline-flex items-center gap-1">
-          <span style={{ color: "var(--text-muted)" }}>sold out</span> = no rate
-          returned
-        </span>
-      </div>
+      {tab === "grid" && (
+        <>
+          <div className="card mt-3 overflow-x-auto">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
+              <thead>
+                <tr
+                  className="sticky top-0 z-10 text-left text-xs"
+                  style={{ background: "var(--surface)", color: "var(--text-secondary)" }}
+                >
+                  <th className="px-3 py-2.5 font-medium">Check-in</th>
+                  <th className="px-3 py-2.5 font-semibold" style={{ color: "var(--accent)" }}>
+                    {myHotel ? myHotel.name : "My rate"}
+                  </th>
+                  {comps.map((h) => (
+                    <th key={h.hotel_id} className="max-w-32 truncate px-3 py-2.5 font-medium" title={h.name}>
+                      {h.name}
+                    </th>
+                  ))}
+                  <th className="px-3 py-2.5 text-right font-medium">Median</th>
+                  <th className="px-3 py-2.5 font-medium">Demand</th>
+                  <th className="px-3 py-2.5 font-medium">Advice</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <GridRowView
+                    key={r.date}
+                    row={r}
+                    comps={comps}
+                    fmt={fmt}
+                    editing={editingDate === r.date}
+                    editValue={editValue}
+                    onStartEdit={() => {
+                      setEditingDate(r.date);
+                      setEditValue(r.myPrice != null ? String(r.myPrice) : "");
+                    }}
+                    onEditChange={setEditValue}
+                    onEditSave={() => saveMyRate(r.date)}
+                    onEditCancel={() => setEditingDate(null)}
+                    onOpen={() => setDrawerDate(r.date)}
+                    onTooltip={setTooltip}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div
+            className="mt-3 flex flex-wrap items-center gap-3 text-xs"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            <span>Cell color = price vs that night&apos;s market median:</span>
+            {[
+              ["bin--2", "≤ −15%"],
+              ["bin--1", "−15…−5%"],
+              ["bin-0", "±5%"],
+              ["bin-1", "+5…15%"],
+              ["bin-2", "≥ +15%"],
+            ].map(([cls, label]) => (
+              <span key={cls} className="inline-flex items-center gap-1">
+                <span
+                  className={`${cls} inline-block h-3.5 w-3.5 rounded border`}
+                  style={{ borderColor: "var(--border)" }}
+                />
+                {label}
+              </span>
+            ))}
+            <span>· rates prefer the brand site&apos;s price when TripAdvisor lists it (hover a cell for all sellers)</span>
+          </div>
+        </>
+      )}
+
+      {tab === "trends" && (
+        <div className="card mt-3 p-5">
+          <TrendChart rows={rows} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
+        </div>
+      )}
+
+      {tab === "ladder" && (
+        <div className="card mt-3 p-5">
+          <RateLadder rows={rows} hotels={hotels} fmt={fmt} />
+        </div>
+      )}
 
       {/* Tooltip layer */}
       {tooltip && (
         <div
-          className="pointer-events-none fixed z-50 max-w-72 rounded-lg border px-3 py-2 text-xs shadow-lg"
+          className="card pointer-events-none fixed z-50 max-w-72 px-3 py-2 text-xs"
           style={{
             left: Math.min(tooltip.x + 14, typeof window !== "undefined" ? window.innerWidth - 300 : tooltip.x),
             top: tooltip.y + 14,
-            background: "var(--surface)",
-            borderColor: "var(--border)",
-            color: "var(--text-primary)",
           }}
         >
           {tooltip.lines.map((l, i) => (
-            <div key={i} style={i > 0 ? { color: "var(--text-secondary)" } : undefined}>
+            <div key={i} style={i > 0 ? { color: "var(--text-secondary)" } : { fontWeight: 600 }}>
               {l}
             </div>
           ))}
         </div>
       )}
 
-      {/* History drawer */}
       {drawerRow && (
         <HistoryDrawer
           row={drawerRow}
@@ -405,28 +440,15 @@ function Shell({
 }) {
   return (
     <main className="mx-auto max-w-screen-2xl p-4 sm:p-6">
-      {header ?? (
-        <h1 className="text-xl font-semibold">Rate Beacon</h1>
-      )}
+      {header ?? <h1 className="text-xl font-semibold">Rate Beacon</h1>}
       {children}
     </main>
   );
 }
 
-function StatTile({
-  value,
-  label,
-  tone,
-}: {
-  value: string;
-  label: string;
-  tone?: string;
-}) {
+function StatTile({ value, label, tone }: { value: string; label: string; tone?: string }) {
   return (
-    <div
-      className="rounded-xl border p-4"
-      style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-    >
+    <div className="card p-4">
       <div className="text-2xl font-semibold" style={tone ? { color: tone } : undefined}>
         {value}
       </div>
@@ -437,10 +459,7 @@ function StatTile({
   );
 }
 
-const ADVICE_META: Record<
-  string,
-  { label: string; icon: string; color: string }
-> = {
+const ADVICE_META: Record<string, { label: string; icon: string; color: string }> = {
   raise: { label: "Raise", icon: "▲", color: "var(--delta-good-text)" },
   review_low: { label: "Low?", icon: "▲", color: "var(--status-warning)" },
   review_high: { label: "High", icon: "▼", color: "var(--status-critical)" },
@@ -484,12 +503,16 @@ function GridRowView({
       lines.push("Sold out / no rate returned");
       lines.push(`checked ${c.capturedOn}`);
     } else {
-      lines.push(`${fmt(c.price)} per night`);
+      lines.push(
+        `${fmt(c.price)} · ${c.direct ? "brand site" : c.source ?? "cheapest seller"}`
+      );
       if (row.median != null && row.median > 0) {
         const pct = ((c.price - row.median) / row.median) * 100;
         lines.push(`${pct >= 0 ? "+" : ""}${pct.toFixed(0)}% vs market median`);
       }
-      if (c.roomDesc) lines.push(c.roomDesc.slice(0, 90));
+      for (const o of (c.offers ?? []).slice(0, 4)) {
+        lines.push(`${o.name}: ${fmt(o.total)}`);
+      }
       lines.push(`captured ${c.capturedOn}`);
     }
     onTooltip({ x: e.clientX, y: e.clientY, lines });
@@ -500,22 +523,19 @@ function GridRowView({
       className="border-t"
       style={{
         borderColor: "var(--gridline)",
-        background: weekend ? "color-mix(in oklab, var(--gridline) 25%, transparent)" : undefined,
+        background: weekend ? "color-mix(in oklab, var(--surface-2) 55%, transparent)" : undefined,
       }}
     >
       <td className="whitespace-nowrap px-3 py-1.5">
-        <button
-          onClick={onOpen}
-          className="underline-offset-2 hover:underline"
-          title="Open price history"
-        >
+        <button onClick={onOpen} className="underline-offset-2 hover:underline" title="Open price history">
           {dateLabel(row.date)}
         </button>
       </td>
 
       {/* My rate (editable) */}
       <td
-        className={`${binOf(row.myPrice, row.median)} cursor-pointer px-3 py-1.5 tabular-nums`}
+        className={`${binOf(row.myPrice, row.median)} cursor-pointer px-3 py-1.5 font-medium tabular-nums`}
+        style={{ boxShadow: "inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent)" }}
         onClick={() => !editing && onStartEdit()}
         title="Click to set your rate for this night"
       >
@@ -562,7 +582,14 @@ function GridRowView({
             ) : soldOut ? (
               <span style={{ color: "var(--text-muted)" }}>sold out</span>
             ) : (
-              fmt(c.price as number)
+              <>
+                {fmt(c.price as number)}
+                {c.direct && (
+                  <span className="ml-0.5 align-super text-[9px]" style={{ color: "var(--text-muted)" }} title="Brand-site rate">
+                    D
+                  </span>
+                )}
+              </>
             )}
           </td>
         );
@@ -572,19 +599,18 @@ function GridRowView({
         {row.median != null ? fmt(row.median) : <span style={{ color: "var(--text-muted)" }}>—</span>}
       </td>
 
-      {/* Demand 0–100: number + magnitude bar (sequential hue) */}
       <td className="px-3 py-1.5">
         {row.demand != null ? (
           <span className="inline-flex items-center gap-1.5">
             <span className="w-6 text-right text-xs tabular-nums">{row.demand}</span>
             <span
-              className="inline-block h-2 w-14 overflow-hidden rounded"
+              className="inline-block h-2 w-14 overflow-hidden rounded-full"
               style={{ background: "var(--gridline)" }}
               role="img"
               aria-label={`Demand ${row.demand} of 100`}
             >
               <span
-                className="block h-full rounded"
+                className="block h-full rounded-full"
                 style={{ width: `${row.demand}%`, background: "var(--series-1)" }}
               />
             </span>
@@ -602,8 +628,11 @@ function GridRowView({
       <td className="whitespace-nowrap px-3 py-1.5">
         {advice ? (
           <span
-            className="inline-flex items-center gap-1 text-xs font-medium"
-            style={{ color: advice.color }}
+            className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold"
+            style={{
+              color: advice.color,
+              background: "color-mix(in oklab, currentColor 12%, transparent)",
+            }}
             title={
               row.momentumPct != null
                 ? `Market moved ${row.momentumPct >= 0 ? "+" : ""}${row.momentumPct.toFixed(0)}% over ~2 weeks`
@@ -617,6 +646,275 @@ function GridRowView({
         )}
       </td>
     </tr>
+  );
+}
+
+// ── Trends: my rate vs the market band over the horizon ──────────────────────
+function TrendChart({
+  rows,
+  fmt,
+  myName,
+}: {
+  rows: GridRow[];
+  fmt: (n: number) => string;
+  myName: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const W = 920;
+  const H = 300;
+  const padL = 52;
+  const padR = 12;
+  const padT = 16;
+  const padB = 34;
+
+  const withData = rows.filter((r) => r.median != null || r.myPrice != null);
+  if (withData.length < 2) {
+    return (
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        Not enough data yet — refresh rates first.
+      </p>
+    );
+  }
+
+  const values = rows.flatMap((r) =>
+    [r.min, r.max, r.median, r.myPrice].filter((v): v is number => v != null)
+  );
+  const lo = Math.min(...values) * 0.95;
+  const hi = Math.max(...values) * 1.05;
+  const x = (i: number) => padL + (i / (rows.length - 1)) * (W - padL - padR);
+  const y = (v: number) => H - padB - ((v - lo) / (hi - lo || 1)) * (H - padT - padB);
+
+  function linePath(get: (r: GridRow) => number | null): string {
+    let d = "";
+    let pen = false;
+    rows.forEach((r, i) => {
+      const v = get(r);
+      if (v == null) {
+        pen = false;
+        return;
+      }
+      d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      pen = true;
+    });
+    return d;
+  }
+
+  // Market band: contiguous segments where min & max exist.
+  const bandSegs: string[] = [];
+  let seg: { i: number; min: number; max: number }[] = [];
+  const flush = () => {
+    if (seg.length > 1) {
+      const top = seg.map((p) => `${x(p.i).toFixed(1)},${y(p.max).toFixed(1)}`).join(" L");
+      const bot = [...seg].reverse().map((p) => `${x(p.i).toFixed(1)},${y(p.min).toFixed(1)}`).join(" L");
+      bandSegs.push(`M${top} L${bot} Z`);
+    }
+    seg = [];
+  };
+  rows.forEach((r, i) => {
+    if (r.min != null && r.max != null) seg.push({ i, min: r.min, max: r.max });
+    else flush();
+  });
+  flush();
+
+  const hoverRow = hover != null ? rows[hover] : null;
+  const yTicks = Array.from({ length: 4 }, (_, k) => lo + ((k + 1) / 4) * (hi - lo));
+  const xTickEvery = Math.max(1, Math.round(rows.length / 8));
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-4 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-0.5 w-5 rounded" style={{ background: "var(--accent)" }} />
+          {myName}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="inline-block h-0.5 w-5 rounded"
+            style={{ borderTop: "2px dashed var(--text-muted)" }}
+          />
+          market median
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="inline-block h-3 w-5 rounded"
+            style={{ background: "color-mix(in oklab, var(--series-1) 16%, transparent)" }}
+          />
+          market min–max
+        </span>
+      </div>
+      <div className="relative mt-2 overflow-x-auto">
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full min-w-[640px]"
+          role="img"
+          aria-label="Your nightly rate versus the market band across upcoming dates"
+          onMouseLeave={() => setHover(null)}
+          onMouseMove={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const px = ((e.clientX - rect.left) / rect.width) * W;
+            const i = Math.round(((px - padL) / (W - padL - padR)) * (rows.length - 1));
+            setHover(Math.max(0, Math.min(rows.length - 1, i)));
+          }}
+        >
+          {yTicks.map((v) => (
+            <g key={v}>
+              <line x1={padL} y1={y(v)} x2={W - padR} y2={y(v)} stroke="var(--gridline)" strokeWidth="1" />
+              <text x={padL - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">
+                {fmt(v)}
+              </text>
+            </g>
+          ))}
+          {bandSegs.map((d, i) => (
+            <path key={i} d={d} fill="color-mix(in oklab, var(--series-1) 16%, transparent)" />
+          ))}
+          <path d={linePath((r) => r.median)} fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeDasharray="5 4" />
+          <path d={linePath((r) => r.myPrice)} fill="none" stroke="var(--accent)" strokeWidth="2.5" />
+          {rows.map((r, i) =>
+            i % xTickEvery === 0 ? (
+              <text
+                key={r.date}
+                x={x(i)}
+                y={H - 10}
+                textAnchor="middle"
+                fontSize="11"
+                fill="var(--text-muted)"
+              >
+                {r.date.slice(5)}
+              </text>
+            ) : null
+          )}
+          {hoverRow && hover != null && (
+            <g>
+              <line x1={x(hover)} y1={padT} x2={x(hover)} y2={H - padB} stroke="var(--baseline)" strokeWidth="1" />
+              {hoverRow.myPrice != null && (
+                <circle cx={x(hover)} cy={y(hoverRow.myPrice)} r="4.5" fill="var(--accent)" stroke="var(--surface)" strokeWidth="2" />
+              )}
+              {hoverRow.median != null && (
+                <circle cx={x(hover)} cy={y(hoverRow.median)} r="4" fill="var(--text-muted)" stroke="var(--surface)" strokeWidth="2" />
+              )}
+            </g>
+          )}
+        </svg>
+        {hoverRow && (
+          <div className="card pointer-events-none absolute top-2 right-2 px-3 py-2 text-xs">
+            <div className="font-semibold">{dateLabel(hoverRow.date)}</div>
+            <div style={{ color: "var(--text-secondary)" }}>
+              {hoverRow.myPrice != null && <>You: {fmt(hoverRow.myPrice)} · </>}
+              {hoverRow.median != null && <>median {fmt(hoverRow.median)}</>}
+              {hoverRow.min != null && hoverRow.max != null && (
+                <> · market {fmt(hoverRow.min)}–{fmt(hoverRow.max)}</>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Rate ladder: where the hotel sits in the market on one night ─────────────
+function RateLadder({
+  rows,
+  hotels,
+  fmt,
+}: {
+  rows: GridRow[];
+  hotels: Hotel[];
+  fmt: (n: number) => string;
+}) {
+  const [idx, setIdx] = useState(0);
+  const row = rows[Math.min(idx, rows.length - 1)];
+  if (!row) return null;
+
+  const entries = hotels
+    .map((h) => {
+      const isMine = h.is_mine;
+      const price = isMine ? row.myPrice : row.cells[h.hotel_id]?.price ?? null;
+      const c = row.cells[h.hotel_id];
+      const soldOut = !isMine && c?.capturedOn != null && (!c.available || c.price == null);
+      return { hotel: h, price, soldOut, direct: c?.direct ?? false };
+    })
+    .sort((a, b) => (b.price ?? -1) - (a.price ?? -1));
+  const maxPrice = Math.max(1, ...entries.map((e) => e.price ?? 0));
+  const priced = entries.filter((e) => e.price != null);
+  const myRank = priced.findIndex((e) => e.hotel.is_mine);
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-3">
+        <button className="btn-ghost px-2.5 py-1 text-sm" onClick={() => setIdx(Math.max(0, idx - 1))} disabled={idx === 0}>
+          ←
+        </button>
+        <select value={idx} onChange={(e) => setIdx(Number(e.target.value))} className="btn-ghost px-2 py-1.5 text-sm font-medium">
+          {rows.map((r, i) => (
+            <option key={r.date} value={i}>
+              {dateLabel(r.date)}
+            </option>
+          ))}
+        </select>
+        <button
+          className="btn-ghost px-2.5 py-1 text-sm"
+          onClick={() => setIdx(Math.min(rows.length - 1, idx + 1))}
+          disabled={idx >= rows.length - 1}
+        >
+          →
+        </button>
+        <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+          {myRank >= 0 && (
+            <>
+              You&apos;re <b>#{myRank + 1} of {priced.length}</b> priced hotels (most expensive first)
+            </>
+          )}
+          {row.demand != null && <> · demand {row.demand}/100</>}
+        </span>
+      </div>
+
+      <ul className="mt-4 space-y-1.5">
+        {entries.map(({ hotel, price, soldOut, direct }) => (
+          <li key={hotel.hotel_id} className="flex items-center gap-3">
+            <span
+              className="w-56 truncate text-sm"
+              style={{ fontWeight: hotel.is_mine ? 700 : 400, color: hotel.is_mine ? "var(--accent)" : undefined }}
+              title={hotel.name}
+            >
+              {hotel.name}
+            </span>
+            <div className="relative h-6 flex-1 overflow-hidden rounded-md" style={{ background: "var(--surface-2)" }}>
+              {price != null && (
+                <div
+                  className="h-full rounded-md"
+                  style={{
+                    width: `${(price / maxPrice) * 100}%`,
+                    background: hotel.is_mine
+                      ? "var(--accent)"
+                      : "color-mix(in oklab, var(--series-1) 55%, var(--surface))",
+                  }}
+                />
+              )}
+            </div>
+            <span className="w-24 text-right text-sm tabular-nums">
+              {price != null ? (
+                <>
+                  {fmt(price)}
+                  {direct && (
+                    <span className="ml-0.5 align-super text-[9px]" style={{ color: "var(--text-muted)" }}>
+                      D
+                    </span>
+                  )}
+                </>
+              ) : soldOut ? (
+                <span style={{ color: "var(--text-muted)" }}>sold out</span>
+              ) : (
+                <span style={{ color: "var(--text-muted)" }}>—</span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-3 text-xs" style={{ color: "var(--text-muted)" }}>
+        Bars show each hotel&apos;s nightly rate for this check-in date; &ldquo;D&rdquo; marks a brand-site (direct) rate.
+      </p>
+    </div>
   );
 }
 
@@ -664,20 +962,16 @@ function HistoryDrawer({
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
       <aside
-        className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto border-l p-5 shadow-xl"
+        className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto border-l p-5"
         style={{ background: "var(--surface)", borderColor: "var(--border)" }}
         role="dialog"
         aria-label={`Price history for ${dateLabel(row.date)}`}
       >
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">{dateLabel(row.date)}</h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg border px-2.5 py-1 text-sm"
-            style={{ borderColor: "var(--baseline)" }}
-          >
+          <button onClick={onClose} className="btn-ghost px-2.5 py-1 text-sm">
             Close
           </button>
         </div>
@@ -696,10 +990,8 @@ function HistoryDrawer({
               return (
                 <li
                   key={h.hotel_id}
-                  className="rounded-lg border p-3"
-                  style={{
-                    borderColor: h.is_mine ? "var(--accent)" : "var(--border)",
-                  }}
+                  className="rounded-xl border p-3"
+                  style={{ borderColor: h.is_mine ? "var(--accent)" : "var(--border)" }}
                 >
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="truncate text-sm font-medium">

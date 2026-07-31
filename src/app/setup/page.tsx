@@ -15,6 +15,8 @@ const CURRENCIES = ["USD", "EUR", "GBP", "INR", "CAD", "AUD", "AED", "JPY"];
 
 export default function SetupPage() {
   const router = useRouter();
+  const [profileId, setProfileId] = useState<number | null>(null);
+  const [profileName, setProfileName] = useState("");
   const [ref, setRef] = useState("");
   const [locationKey, setLocationKey] = useState<string | null>(null);
   const [found, setFound] = useState<FoundHotel[]>([]);
@@ -27,21 +29,27 @@ export default function SetupPage() {
   const [marketName, setMarketName] = useState("");
   const [currency, setCurrency] = useState("USD");
   const [horizonDays, setHorizonDays] = useState(45);
+  const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Prefill when editing an existing setup.
+  // ?profileId=N → edit that profile; ?new=1 → blank form for a new one.
   useEffect(() => {
-    fetch("/api/setup")
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("new")) return;
+    const id = Number(params.get("profileId")) || null;
+    fetch(`/api/setup${id ? `?profileId=${id}` : ""}`)
       .then((r) => r.json())
       .then((j) => {
-        if (j.settings) {
-          setHotelName(j.settings.hotel_name ?? "");
-          setMarketName(j.settings.city_name ?? "");
-          setCurrency(j.settings.currency ?? "USD");
-          setHorizonDays(j.settings.horizon_days ?? 45);
-          if (j.settings.city_code) setLocationKey(j.settings.city_code);
-        }
+        if (!j.profile) return;
+        setProfileId(j.profile.id);
+        setProfileName(j.profile.name ?? "");
+        setHotelName(j.profile.hotel_name ?? "");
+        setMarketName(j.profile.city_name ?? "");
+        setCurrency(j.profile.currency ?? "USD");
+        setHorizonDays(j.profile.horizon_days ?? 45);
+        setNotes(j.profile.notes ?? "");
+        if (j.profile.city_code) setLocationKey(j.profile.city_code);
         if (j.hotels?.length) {
           setPicked(
             j.hotels.map(
@@ -71,7 +79,6 @@ export default function SetupPage() {
       setFound(append ? [...found, ...j.hotels] : j.hotels);
       setOffset(nextOffset + (j.hotels?.length ?? 0));
       setHasMore((j.hotels?.length ?? 0) >= 30);
-      // A pasted hotel page → auto-add it (as "mine" if nothing is yet).
       if (!append && j.pastedHotel) {
         const p = j.pastedHotel as { hotelKey: string; name: string | null };
         setPicked((prev) => {
@@ -79,14 +86,11 @@ export default function SetupPage() {
           const mineExists = prev.some((x) => x.isMine);
           return [
             ...prev,
-            {
-              hotelKey: p.hotelKey,
-              name: p.name ?? p.hotelKey,
-              isMine: !mineExists,
-            },
+            { hotelKey: p.hotelKey, name: p.name ?? p.hotelKey, isMine: !mineExists },
           ];
         });
         if (p.name && !hotelName) setHotelName(p.name);
+        if (p.name && !profileName) setProfileName(p.name);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -137,18 +141,19 @@ export default function SetupPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        profileId,
+        name: profileName,
         hotelName,
         cityCode: locationKey,
         cityName: marketName,
         currency,
         horizonDays,
         adults: 2,
+        notes,
         hotels: picked.map((h) => ({
           hotelId: h.hotelKey,
           name: h.name,
           isMine: h.isMine,
-          latitude: null,
-          longitude: null,
         })),
       }),
     });
@@ -165,17 +170,20 @@ export default function SetupPage() {
 
   return (
     <main className="mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold">Set up your market</h1>
+      <h1 className="text-2xl font-semibold">
+        {profileId ? "Edit profile" : "New hotel profile"}
+      </h1>
       <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-        Rates come from TripAdvisor&apos;s public meta-search (via the free Xotelo
-        API), so every hotel is identified by its TripAdvisor page.
+        A profile is one baseline hotel plus the competitor set it&apos;s shopped
+        against. Rates come from TripAdvisor&apos;s public compare list (via the
+        free Xotelo API), preferring each hotel&apos;s brand-site price.
       </p>
 
       {/* Step 1: paste link */}
       <section className="mt-8">
-        <h2 className="font-medium">1 · Your hotel</h2>
+        <h2 className="font-medium">1 · Baseline hotel</h2>
         <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-          Find your hotel on tripadvisor.com and paste the page link — e.g.
+          Find the hotel on tripadvisor.com and paste the page link — e.g.
           …/Hotel_Review-g187147-d197685-Reviews-… (a city page link works too).
         </p>
         <div className="mt-2 flex gap-2">
@@ -190,8 +198,7 @@ export default function SetupPage() {
           <button
             onClick={() => lookup(ref)}
             disabled={loading || !ref.trim()}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            style={{ background: "var(--accent)" }}
+            className="btn-accent px-4 py-2 text-sm disabled:opacity-50"
           >
             {loading ? "Looking…" : "Look up"}
           </button>
@@ -213,9 +220,9 @@ export default function SetupPage() {
               Tracking {picked.length} hotel{picked.length > 1 ? "s" : ""}
             </h3>
             <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Tick &ldquo;mine&rdquo; on your own hotel so the dashboard compares
-              you against the rest. Leave it unticked everywhere if your hotel
-              isn&apos;t on TripAdvisor — you can type your rates into the grid.
+              Tick &ldquo;mine&rdquo; on the baseline hotel. Leave it unticked
+              everywhere if it isn&apos;t on TripAdvisor — rates can be typed into
+              the grid instead.
             </p>
             <ul className="mt-2 space-y-1">
               {picked.map((h) => (
@@ -230,10 +237,7 @@ export default function SetupPage() {
                   <span>
                     {h.name}
                     {h.isMine && (
-                      <span
-                        className="ml-2 rounded px-1.5 py-0.5 text-xs font-medium text-white"
-                        style={{ background: "var(--accent)" }}
-                      >
+                      <span className="btn-accent ml-2 rounded px-1.5 py-0.5 text-xs">
                         mine
                       </span>
                     )}
@@ -270,11 +274,7 @@ export default function SetupPage() {
             className="w-full rounded-lg border px-3 py-2 text-sm"
             style={inputStyle}
           />
-          <button
-            onClick={addByUrl}
-            className="rounded-lg border px-4 py-2 text-sm"
-            style={{ borderColor: "var(--baseline)" }}
-          >
+          <button onClick={addByUrl} className="btn-ghost px-4 py-2 text-sm">
             Add
           </button>
         </div>
@@ -325,11 +325,11 @@ export default function SetupPage() {
         <h2 className="font-medium">3 · Options</h2>
         <div className="mt-2 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <label className="text-sm">
-            <span style={{ color: "var(--text-secondary)" }}>Your hotel name</span>
+            <span style={{ color: "var(--text-secondary)" }}>Profile name</span>
             <input
-              value={hotelName}
-              onChange={(e) => setHotelName(e.target.value)}
-              placeholder="Shown in the header"
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="e.g. Candlewood — Pensacola"
               className="mt-1 w-full rounded-lg border px-3 py-2"
               style={inputStyle}
             />
@@ -339,7 +339,7 @@ export default function SetupPage() {
             <input
               value={marketName}
               onChange={(e) => setMarketName(e.target.value)}
-              placeholder="e.g. Downtown Austin"
+              placeholder="e.g. Pensacola, FL"
               className="mt-1 w-full rounded-lg border px-3 py-2"
               style={inputStyle}
             />
@@ -370,10 +370,18 @@ export default function SetupPage() {
             />
           </label>
         </div>
-        <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
-          Daily data volume = hotels × days ahead (one lookup per hotel per
-          night). 6 hotels × 45 days ≈ 270 polite requests once a day.
-        </p>
+        <label className="mt-4 block text-sm">
+          <span style={{ color: "var(--text-secondary)" }}>
+            Notes (tier, area, why these competitors)
+          </span>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={3}
+            className="mt-1 w-full rounded-lg border px-3 py-2"
+            style={inputStyle}
+          />
+        </label>
       </section>
 
       {error && (
@@ -383,19 +391,10 @@ export default function SetupPage() {
       )}
 
       <div className="mt-8 flex gap-3">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="rounded-lg px-5 py-2.5 font-medium text-white disabled:opacity-50"
-          style={{ background: "var(--accent)" }}
-        >
+        <button onClick={save} disabled={saving} className="btn-accent px-5 py-2.5 disabled:opacity-50">
           {saving ? "Saving…" : "Save & open dashboard"}
         </button>
-        <button
-          onClick={() => router.push("/")}
-          className="rounded-lg border px-5 py-2.5"
-          style={{ borderColor: "var(--baseline)" }}
-        >
+        <button onClick={() => router.push("/")} className="btn-ghost px-5 py-2.5">
           Cancel
         </button>
       </div>

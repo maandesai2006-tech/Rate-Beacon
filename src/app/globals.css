@@ -1,52 +1,64 @@
 @import "tailwindcss";
 
-/* Design tokens — light mode. Viz roles follow the validated reference
-   palette: diverging blue↔red with a neutral gray midpoint for price-vs-market,
-   sequential blue for demand magnitude, reserved status colors for advice. */
+/* Design tokens. Chrome (buttons, highlights, my-hotel identity) uses an
+   indigo accent; data encodings keep the validated viz palette: diverging
+   blue↔red vs market median, sequential blue for demand magnitude, reserved
+   status colors for advice. */
 :root {
   color-scheme: light;
-  --page: #f9f9f7;
-  --surface: #fcfcfb;
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted: #898781;
-  --gridline: #e1e0d9;
-  --baseline: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.1);
+  --page: #f6f7fb;
+  --surface: #ffffff;
+  --surface-2: #eef0f8;
+  --text-primary: #101223;
+  --text-secondary: #4d5166;
+  --text-muted: #8a8ea3;
+  --gridline: #e6e8f2;
+  --baseline: #c9cddd;
+  --border: rgba(16, 18, 35, 0.08);
+  --shadow: 0 1px 2px rgba(16, 18, 35, 0.05), 0 8px 24px -12px rgba(16, 18, 35, 0.12);
 
-  --series-1: #2a78d6;      /* sparklines, demand bar */
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.1);
+  --accent-ink: #ffffff;
+
+  --series-1: #2a78d6;      /* demand bar, market marks */
   --div-low: #2a78d6;       /* cheaper than market */
-  --div-mid: #f0efec;       /* at market */
+  --div-mid: #eef0f8;       /* at market */
   --div-high: #e34948;      /* pricier than market */
 
   --status-good: #0ca30c;
-  --status-warning: #fab219;
-  --status-serious: #ec835a;
+  --status-warning: #b97900;
+  --status-serious: #c05621;
   --status-critical: #d03b3b;
   --delta-good-text: #006300;
-
-  --accent: #2a78d6;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --page: #0d0d0d;
-    --surface: #1a1a19;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --gridline: #2c2c2a;
-    --baseline: #383835;
-    --border: rgba(255, 255, 255, 0.1);
+    --page: #0e0f16;
+    --surface: #171923;
+    --surface-2: #1f2230;
+    --text-primary: #f4f5fa;
+    --text-secondary: #b6bacb;
+    --text-muted: #7d8196;
+    --gridline: #262a3a;
+    --baseline: #3a3f55;
+    --border: rgba(255, 255, 255, 0.09);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+
+    --accent: #818cf8;
+    --accent-soft: rgba(129, 140, 248, 0.16);
+    --accent-ink: #101223;
 
     --series-1: #3987e5;
     --div-low: #3987e5;
-    --div-mid: #383835;
+    --div-mid: #262a3a;
     --div-high: #e66767;
 
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
     --delta-good-text: #0ca30c;
-    --accent: #3987e5;
   }
 }
 
@@ -57,10 +69,44 @@ body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+
+.btn-accent {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: 10px;
+  font-weight: 600;
+}
+.btn-ghost {
+  border: 1px solid var(--baseline);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.tab {
+  border-radius: 9999px;
+  padding: 0.375rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.tab[data-active="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.tab:not([data-active="true"]):hover {
+  background: var(--accent-soft);
+}
+
 /* Diverging price-vs-market bins (background tints; text stays primary ink). */
-.bin--2 { background: color-mix(in oklab, var(--div-low) 26%, var(--surface)); }
-.bin--1 { background: color-mix(in oklab, var(--div-low) 13%, var(--surface)); }
+.bin--2 { background: color-mix(in oklab, var(--div-low) 32%, var(--surface)); }
+.bin--1 { background: color-mix(in oklab, var(--div-low) 15%, var(--surface)); }
 .bin-0  { background: var(--div-mid); }
-.bin-1  { background: color-mix(in oklab, var(--div-high) 13%, var(--surface)); }
-.bin-2  { background: color-mix(in oklab, var(--div-high) 26%, var(--surface)); }
+.bin-1  { background: color-mix(in oklab, var(--div-high) 15%, var(--surface)); }
+.bin-2  { background: color-mix(in oklab, var(--div-high) 32%, var(--surface)); }
 .bin-na { background: var(--surface); color: var(--text-muted); }

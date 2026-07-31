@@ -81,12 +81,60 @@ export function parseTripAdvisorRef(input: string): ParsedTripAdvisorUrl {
   };
 }
 
+export interface Quote {
+  name: string;
+  total: number; // rate + tax for the stay
+}
+
 export interface XoteloRates {
-  price: number | null; // cheapest OTA total for the stay
+  price: number | null; // headline rate: brand-direct when detected, else cheapest
+  priceLow: number | null; // cheapest quote across all sellers
+  source: string | null; // which seller the headline rate came from
+  direct: boolean; // true when the headline rate is the brand site's
+  offers: Quote[];
   currency: string | null;
-  otaName: string | null; // which OTA had the cheapest rate
-  offerCount: number;
   available: boolean;
+}
+
+// Chain brand sites as they appear in TripAdvisor's compare list, mapped to
+// the sub-brand names that identify them in a hotel's own name.
+const BRAND_FAMILIES: [string, string[]][] = [
+  ["ihg", ["candlewood", "holiday inn", "staybridge", "crowne plaza", "intercontinental", "avid", "even hotel", "hotel indigo", "kimpton", "ihg"]],
+  ["marriott", ["marriott", "courtyard", "residence inn", "towneplace", "fairfield", "springhill", "four points", "sheraton", "westin", "aloft", "ac hotel", "moxy", "element"]],
+  ["hilton", ["hilton", "hampton", "home2", "homewood", "tru by", "doubletree", "embassy suites", "garden inn"]],
+  ["hyatt", ["hyatt"]],
+  ["wyndham", ["wyndham", "la quinta", "days inn", "super 8", "baymont", "microtel", "ramada", "travelodge", "howard johnson", "wingate"]],
+  ["choicehotels", ["comfort inn", "comfort suites", "quality inn", "sleep inn", "clarion", "econo lodge", "mainstay", "rodeway", "cambria", "woodspring"]],
+  ["bestwestern", ["best western", "surestay"]],
+  ["redroof", ["red roof"]],
+  ["extendedstayamerica", ["extended stay america"]],
+  ["motel6", ["motel 6"]],
+  ["sonesta", ["sonesta"]],
+];
+
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\.(com|co\.uk|net)\b/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Is this quote the hotel's own brand site? Match either the generic
+// "official site" label or the chain site that owns the hotel's sub-brand.
+export function isDirectQuote(quoteName: string, hotelName: string): boolean {
+  const q = normalize(quoteName);
+  if (!q) return false;
+  if (q.includes("official")) return true;
+  const h = normalize(hotelName);
+  for (const [site, subBrands] of BRAND_FAMILIES) {
+    if (q.includes(site) || site.includes(q.replace(/ /g, ""))) {
+      if (subBrands.some((b) => h.includes(b))) return true;
+    }
+  }
+  // e.g. a quote literally named "Candlewood Suites" matching the hotel name
+  return q.length > 3 && h.includes(q);
 }
 
 interface RatesResult {
@@ -98,11 +146,21 @@ interface RatesResult {
 
 export async function getRates(
   hotelKey: string,
+  hotelName: string,
   checkIn: string,
   checkOut: string,
   currency: string,
   adults: number
 ): Promise<XoteloRates> {
+  const empty: XoteloRates = {
+    price: null,
+    priceLow: null,
+    source: null,
+    direct: false,
+    offers: [],
+    currency: null,
+    available: false,
+  };
   try {
     const result = await xoteloGet<RatesResult>("/rates", {
       hotel_key: hotelKey,
@@ -112,26 +170,30 @@ export async function getRates(
       adults: String(adults),
       rooms: "1",
     });
-    const offers = (result.rates ?? []).filter(
-      (r) => typeof r.rate === "number" && r.rate! > 0
-    );
-    if (offers.length === 0) {
-      return { price: null, currency: null, otaName: null, offerCount: 0, available: false };
-    }
-    const cheapest = offers.reduce((a, b) =>
-      (a.rate! + (a.tax ?? 0)) <= (b.rate! + (b.tax ?? 0)) ? a : b
-    );
+    const offers: Quote[] = (result.rates ?? [])
+      .filter((r) => typeof r.rate === "number" && r.rate! > 0)
+      .map((r) => ({
+        name: r.name ?? r.code ?? "unknown",
+        total: r.rate! + (r.tax ?? 0),
+      }))
+      .sort((a, b) => a.total - b.total);
+    if (offers.length === 0) return empty;
+
+    const directQuote = offers.find((o) => isDirectQuote(o.name, hotelName)) ?? null;
+    const headline = directQuote ?? offers[0];
     return {
-      price: cheapest.rate! + (cheapest.tax ?? 0),
+      price: headline.total,
+      priceLow: offers[0].total,
+      source: headline.name,
+      direct: directQuote != null,
+      offers,
       currency: result.currency ?? currency,
-      otaName: cheapest.name ?? cheapest.code ?? null,
-      offerCount: offers.length,
       available: true,
     };
   } catch (e) {
     if (e instanceof XoteloApiError) {
       // "No availability" style errors mean sold out / not bookable that night.
-      return { price: null, currency: null, otaName: null, offerCount: 0, available: false };
+      return empty;
     }
     throw e;
   }

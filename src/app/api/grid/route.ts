@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { addDaysISO, dateRange, todayISO, weekdayOf } from "@/lib/dates";
 import { adviceFor, demandScore, median, positionOf } from "@/lib/insights";
@@ -6,8 +6,9 @@ import type {
   GridResponse,
   GridRow,
   Hotel,
+  Profile,
+  Quote,
   RateCell,
-  Settings,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -17,55 +18,71 @@ interface SnapshotRow {
   check_in: string;
   captured_on: string;
   price: number | null;
+  price_low: number | null;
+  rate_source: string | null;
+  offers: Quote[] | null;
   available: boolean;
-  room_desc: string | null;
   captured_at?: string;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    return await buildGrid();
+    const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
+    return await buildGrid(profileId);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }
 
-async function buildGrid() {
+async function buildGrid(profileId: number | null) {
   const supa = db();
   const today = todayISO();
 
-  const [settingsRes, hotelsRes] = await Promise.all([
-    supa.from("settings").select("*").eq("id", 1).maybeSingle<Settings>(),
-    supa.from("hotels").select("*").returns<Hotel[]>(),
-  ]);
-  // Surface real query failures (bad URL/key) instead of "not configured".
-  const qErr = settingsRes.error ?? hotelsRes.error;
-  if (qErr) {
-    throw new Error(`Database query failed: ${qErr.message}`);
-  }
-  const settings = settingsRes.data;
-  const hotels = hotelsRes.data;
-  if (!settings || !hotels || hotels.length === 0) {
-    return NextResponse.json({ configured: false });
-  }
+  let profileQuery = supa.from("profiles").select("*").order("id").limit(1);
+  if (profileId) profileQuery = supa.from("profiles").select("*").eq("id", profileId).limit(1);
+  const profileRes = await profileQuery.maybeSingle<Profile>();
+  if (profileRes.error) throw new Error(`Database query failed: ${profileRes.error.message}`);
+  const profile = profileRes.data;
+  if (!profile) return NextResponse.json({ configured: false });
 
-  const horizonEnd = addDaysISO(today, settings.horizon_days);
+  const linksRes = await supa
+    .from("profile_hotels")
+    .select("hotel_id, is_mine, hotels(name)")
+    .eq("profile_id", profile.id)
+    .returns<{ hotel_id: string; is_mine: boolean; hotels: { name: string } | null }[]>();
+  if (linksRes.error) throw new Error(`Database query failed: ${linksRes.error.message}`);
+  const hotels: Hotel[] = (linksRes.data ?? []).map((l) => ({
+    hotel_id: l.hotel_id,
+    name: l.hotels?.name ?? l.hotel_id,
+    is_mine: l.is_mine,
+  }));
+  if (hotels.length === 0) return NextResponse.json({ configured: false });
+
+  const hotelIds = hotels.map((h) => h.hotel_id);
+  const horizonEnd = addDaysISO(today, profile.horizon_days);
   const [latestRes, histRes, myRatesRes, lastCapRes] = await Promise.all([
     supa
       .from("latest_rates")
       .select("*")
+      .in("hotel_id", hotelIds)
       .gte("check_in", today)
       .lt("check_in", horizonEnd)
       .returns<SnapshotRow[]>(),
     // Recent history for momentum: snapshots captured in the last 14 days.
     supa
       .from("rate_snapshots")
-      .select("hotel_id, check_in, captured_on, price, available, room_desc")
+      .select("hotel_id, check_in, captured_on, price, available")
+      .in("hotel_id", hotelIds)
       .gte("check_in", today)
       .lt("check_in", horizonEnd)
       .gte("captured_on", addDaysISO(today, -14))
       .returns<SnapshotRow[]>(),
-    supa.from("my_rates").select("*").gte("check_in", today).lt("check_in", horizonEnd),
+    supa
+      .from("my_rates")
+      .select("check_in, price")
+      .eq("profile_id", profile.id)
+      .gte("check_in", today)
+      .lt("check_in", horizonEnd),
     supa
       .from("rate_snapshots")
       .select("captured_at")
@@ -96,14 +113,17 @@ async function buildGrid() {
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
 
-  const rows: GridRow[] = dateRange(today, settings.horizon_days).map((date) => {
+  const rows: GridRow[] = dateRange(today, profile.horizon_days).map((date) => {
     const cells: Record<string, RateCell> = {};
     for (const h of hotels) {
       const s = latestByKey.get(`${h.hotel_id}|${date}`);
       cells[h.hotel_id] = {
         price: s?.price ?? null,
+        priceLow: s?.price_low ?? s?.price ?? null,
+        source: s?.rate_source ?? null,
+        direct: s?.rate_source?.includes("(direct)") ?? false,
+        offers: s?.offers ?? [],
         available: s ? s.available : true,
-        roomDesc: s?.room_desc ?? null,
         capturedOn: s?.captured_on ?? null,
       };
     }
@@ -119,7 +139,6 @@ async function buildGrid() {
 
     const mkt = median(compPrices);
 
-    // Momentum: market median now vs the oldest snapshot in the 14-day window.
     const oldPrices = comps
       .map((h) => oldestByKey.get(`${h.hotel_id}|${date}`))
       .filter(
@@ -135,12 +154,12 @@ async function buildGrid() {
         : null;
 
     const manual = myManual.get(date) ?? null;
-    const scraped =
+    const live =
       myHotel && cells[myHotel.hotel_id]?.available
         ? cells[myHotel.hotel_id].price
         : null;
-    const myPrice = manual ?? scraped;
-    const myPriceSource = manual != null ? "manual" : scraped != null ? "amadeus" : null;
+    const myPrice = manual ?? live;
+    const myPriceSource = manual != null ? "manual" : live != null ? "live" : null;
 
     const demand = demandScore(soldOutCount, comps.length, momentumPct);
     const position = positionOf(myPrice, mkt);
@@ -171,7 +190,7 @@ async function buildGrid() {
 
   const payload: GridResponse & { configured: boolean } = {
     configured: true,
-    settings,
+    profile,
     hotels,
     rows,
     weekdayAvg,

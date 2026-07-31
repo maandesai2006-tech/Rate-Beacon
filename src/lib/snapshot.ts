@@ -1,37 +1,79 @@
 import { db } from "./db";
 import { getRates } from "./xotelo";
 import { addDaysISO, dateRange, todayISO } from "./dates";
-import type { Hotel, Settings } from "./types";
+import type { Profile } from "./types";
 
 export interface SnapshotResult {
-  dates: number;
+  profiles: number;
   hotels: number;
+  dates: number;
   rowsWritten: number;
   errors: string[];
 }
 
-// Fetch one-night rates for every tracked hotel over the horizon and store
-// today's snapshot. Called by the daily cron and the manual refresh button.
-// Xotelo is one request per hotel per night, so run a small worker pool and
-// let `maxDates` cap the horizon to stay inside serverless time limits.
+interface TrackedHotel {
+  hotel_id: string;
+  name: string;
+  currency: string;
+  adults: number;
+  horizon: number;
+}
+
+// Fetch nightly quotes for every hotel tracked by any profile and store
+// today's snapshot. A hotel shared by several profiles is fetched once, using
+// the widest horizon among them. One Xotelo request per hotel per night, so a
+// small worker pool; `maxDates` keeps a run inside serverless time limits.
 export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
   const supa = db();
 
-  const [{ data: settings }, { data: hotels }] = await Promise.all([
-    supa.from("settings").select("*").eq("id", 1).maybeSingle<Settings>(),
-    supa.from("hotels").select("*").returns<Hotel[]>(),
-  ]);
-  if (!settings || !hotels || hotels.length === 0) {
-    return { dates: 0, hotels: 0, rowsWritten: 0, errors: ["Not configured yet"] };
+  const [{ data: profiles }, { data: links }, { data: hotelRows }] =
+    await Promise.all([
+      supa.from("profiles").select("*").returns<Profile[]>(),
+      supa
+        .from("profile_hotels")
+        .select("profile_id, hotel_id")
+        .returns<{ profile_id: number; hotel_id: string }[]>(),
+      supa
+        .from("hotels")
+        .select("hotel_id, name")
+        .returns<{ hotel_id: string; name: string }[]>(),
+    ]);
+  if (!profiles?.length || !links?.length) {
+    return { profiles: 0, hotels: 0, dates: 0, rowsWritten: 0, errors: ["No profiles configured yet"] };
   }
 
-  const horizon = Math.min(settings.horizon_days, maxDates ?? settings.horizon_days);
-  const dates = dateRange(todayISO(), horizon);
+  const nameById = new Map(hotelRows?.map((h) => [h.hotel_id, h.name]) ?? []);
+  const profileById = new Map(profiles.map((p) => [p.id, p]));
+  const tracked = new Map<string, TrackedHotel>();
+  for (const link of links) {
+    const p = profileById.get(link.profile_id);
+    if (!p) continue;
+    const existing = tracked.get(link.hotel_id);
+    if (existing) {
+      existing.horizon = Math.max(existing.horizon, p.horizon_days);
+    } else {
+      tracked.set(link.hotel_id, {
+        hotel_id: link.hotel_id,
+        name: nameById.get(link.hotel_id) ?? link.hotel_id,
+        currency: p.currency,
+        adults: p.adults,
+        horizon: p.horizon_days,
+      });
+    }
+  }
+
+  const maxHorizon = Math.min(
+    Math.max(...[...tracked.values()].map((h) => h.horizon)),
+    maxDates ?? 120
+  );
+  const dates = dateRange(todayISO(), maxHorizon);
   const errors: string[] = [];
   let rowsWritten = 0;
 
-  const jobs = dates.flatMap((checkIn) =>
-    hotels.map((h) => ({ checkIn, hotel: h }))
+  const jobs = dates.flatMap((checkIn, dayIdx) =>
+    [...tracked.values()]
+      .filter((h) => dayIdx < h.horizon)
+      .map((hotel) => ({ checkIn, hotel }))
   );
 
   const CONCURRENCY = 4;
@@ -46,10 +88,11 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
       try {
         const r = await getRates(
           hotel.hotel_id,
+          hotel.name,
           checkIn,
           addDaysISO(checkIn, 1),
-          settings!.currency,
-          settings!.adults
+          hotel.currency,
+          hotel.adults
         );
         const { error } = await supa.from("rate_snapshots").upsert(
           {
@@ -57,11 +100,12 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
             check_in: checkIn,
             captured_on: todayISO(),
             price: r.price,
-            currency: r.currency ?? settings!.currency,
+            price_low: r.priceLow,
+            rate_source: r.source ? `${r.source}${r.direct ? " (direct)" : ""}` : null,
+            offers: r.offers,
+            currency: r.currency ?? hotel.currency,
             available: r.available,
-            room_desc: r.otaName
-              ? `${r.otaName} · cheapest of ${r.offerCount} OTA offer${r.offerCount === 1 ? "" : "s"}`
-              : null,
+            room_desc: null,
           },
           { onConflict: "hotel_id,check_in,captured_on" }
         );
@@ -77,8 +121,9 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
 
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   return {
+    profiles: profiles.length,
+    hotels: tracked.size,
     dates: dates.length,
-    hotels: hotels.length,
     rowsWritten,
     errors: errors.slice(0, 10),
   };
