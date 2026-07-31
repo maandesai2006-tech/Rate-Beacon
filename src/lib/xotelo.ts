@@ -202,6 +202,8 @@ export async function getRates(
 export interface XoteloHotel {
   hotelKey: string;
   name: string;
+  rating: number | null;
+  reviewCount: number | null;
 }
 
 interface ListResult {
@@ -210,11 +212,17 @@ interface ListResult {
     hotel_key?: string;
     name?: string;
     title?: string;
+    rating?: number;
+    review_count?: number;
+    reviews?: number;
+    review_summary?: { rating?: number; count?: number };
   }[];
   total_count?: number;
 }
 
-// Hotels in a TripAdvisor location, for the competitor picker.
+// Hotels in a TripAdvisor location, for the competitor picker and for
+// refreshing review standing (rating fields are parsed defensively — the
+// exact shape varies).
 export async function listHotels(
   locationKey: string,
   offset = 0,
@@ -229,6 +237,8 @@ export async function listHotels(
     .map((h) => ({
       hotelKey: (h.key ?? h.hotel_key ?? "").toLowerCase(),
       name: h.name ?? h.title ?? "",
+      rating: h.rating ?? h.review_summary?.rating ?? null,
+      reviewCount: h.review_count ?? h.reviews ?? h.review_summary?.count ?? null,
     }))
     .filter((h) => /^g\d+-d\d+$/.test(h.hotelKey) && h.name);
 }

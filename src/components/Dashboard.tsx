@@ -186,10 +186,15 @@ export default function Dashboard() {
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
 
   const next30 = rows.slice(0, 30);
+  const parityRows = rows.filter((r) => r.signals?.parity != null);
   const stats = {
     raise: rows.filter((r) => r.advice === "raise").length,
     high: rows.filter((r) => r.advice === "review_high").length,
     hot: rows.filter((r) => (r.demand ?? 0) >= 40).length,
+    parityCount: parityRows.length,
+    parityAvg: parityRows.length
+      ? parityRows.reduce((a, r) => a + (r.signals.parity?.undercut ?? 0), 0) / parityRows.length
+      : null,
     avg30: (() => {
       const m = next30.filter((r) => r.median != null).map((r) => r.median as number);
       return m.length ? m.reduce((a, b) => a + b, 0) / m.length : null;
@@ -265,7 +270,7 @@ export default function Dashboard() {
       )}
 
       {/* Stat tiles */}
-      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <StatTile
           value={String(stats.raise)}
           label="nights with room to raise"
@@ -276,6 +281,15 @@ export default function Dashboard() {
           value={String(stats.high)}
           label="nights priced above a soft market"
           tone={stats.high > 0 ? "var(--status-critical)" : undefined}
+        />
+        <StatTile
+          value={String(stats.parityCount)}
+          label={
+            stats.parityAvg != null
+              ? `nights an OTA undercuts your direct rate (avg ${fmt(stats.parityAvg)})`
+              : "nights an OTA undercuts your direct rate"
+          }
+          tone={stats.parityCount > 0 ? "var(--status-critical)" : undefined}
         />
         <StatTile
           value={stats.avg30 != null ? fmt(stats.avg30) : "—"}
@@ -340,6 +354,7 @@ export default function Dashboard() {
                   <th className="px-3 py-2.5 text-right font-medium">Median</th>
                   <th className="px-3 py-2.5 font-medium">Demand</th>
                   <th className="px-3 py-2.5 font-medium">Advice</th>
+                  <th className="px-3 py-2.5 font-medium">Context</th>
                 </tr>
               </thead>
               <tbody>
@@ -633,11 +648,16 @@ function GridRowView({
               color: advice.color,
               background: "color-mix(in oklab, currentColor 12%, transparent)",
             }}
-            title={
+            title={[
               row.momentumPct != null
                 ? `Market moved ${row.momentumPct >= 0 ? "+" : ""}${row.momentumPct.toFixed(0)}% over ~2 weeks`
-                : undefined
-            }
+                : null,
+              row.signals?.paceDelta != null && row.signals.paceDelta !== 0
+                ? `${Math.abs(row.signals.paceDelta)} more comp${Math.abs(row.signals.paceDelta) === 1 ? "" : "s"} ${row.signals.paceDelta > 0 ? "sold out" : "reopened"} vs last week`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || undefined}
           >
             <span aria-hidden>{advice.icon}</span> {advice.label}
           </span>
@@ -645,7 +665,62 @@ function GridRowView({
           <span style={{ color: "var(--text-muted)" }}>—</span>
         )}
       </td>
+
+      {/* Context: holidays, events, weather, parity — plain-text chips */}
+      <td className="whitespace-nowrap px-3 py-1.5 text-xs">
+        <span className="inline-flex items-center gap-1.5">
+          {row.signals?.holiday && (
+            <ContextChip
+              label={row.signals.holiday.length > 16 ? `${row.signals.holiday.slice(0, 15)}…` : row.signals.holiday}
+              title={row.signals.holiday}
+              tone="var(--accent)"
+            />
+          )}
+          {!row.signals?.holiday && row.signals?.nearHoliday && (
+            <ContextChip label="Holiday wknd" title="Adjacent to a public holiday" tone="var(--accent)" />
+          )}
+          {row.signals?.eventCount > 0 && (
+            <ContextChip
+              label={`${row.signals.eventCount} event${row.signals.eventCount === 1 ? "" : "s"}`}
+              title={row.signals.topEvents.join(" · ")}
+            />
+          )}
+          {row.signals?.weather && (
+            <ContextChip
+              label={`${row.signals.weather.tMax}°${row.signals.weather.precipProb >= 40 ? ` ${row.signals.weather.label}` : ""}`}
+              title={`Forecast: ${row.signals.weather.label}, high ${row.signals.weather.tMax}°F, ${row.signals.weather.precipProb}% precip`}
+            />
+          )}
+          {row.signals?.parity && (
+            <ContextChip
+              label={`Undercut ${fmt(row.signals.parity.undercut)}`}
+              title={`${row.signals.parity.by} sells below your direct rate by ${fmt(row.signals.parity.undercut)}`}
+              tone="var(--status-critical)"
+            />
+          )}
+          {!row.signals?.holiday &&
+            !row.signals?.nearHoliday &&
+            !row.signals?.eventCount &&
+            !row.signals?.weather &&
+            !row.signals?.parity && <span style={{ color: "var(--text-muted)" }}>—</span>}
+        </span>
+      </td>
     </tr>
+  );
+}
+
+function ContextChip({ label, title, tone }: { label: string; title?: string; tone?: string }) {
+  return (
+    <span
+      className="rounded-md px-1.5 py-0.5 font-medium"
+      style={{
+        color: tone ?? "var(--text-secondary)",
+        background: "color-mix(in oklab, currentColor 10%, transparent)",
+      }}
+      title={title}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -872,12 +947,21 @@ function RateLadder({
       <ul className="mt-4 space-y-1.5">
         {entries.map(({ hotel, price, soldOut, direct }) => (
           <li key={hotel.hotel_id} className="flex items-center gap-3">
-            <span
-              className="w-56 truncate text-sm"
-              style={{ fontWeight: hotel.is_mine ? 700 : 400, color: hotel.is_mine ? "var(--accent)" : undefined }}
-              title={hotel.name}
-            >
-              {hotel.name}
+            <span className="w-64 truncate text-sm" title={hotel.name}>
+              <span
+                style={{
+                  fontWeight: hotel.is_mine ? 700 : 400,
+                  color: hotel.is_mine ? "var(--accent)" : undefined,
+                }}
+              >
+                {hotel.name}
+              </span>
+              {hotel.rating != null && (
+                <span className="ml-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+                  {hotel.rating.toFixed(1)}
+                  {hotel.review_count != null && ` (${hotel.review_count})`}
+                </span>
+              )}
             </span>
             <div className="relative h-6 flex-1 overflow-hidden rounded-md" style={{ background: "var(--surface-2)" }}>
               {price != null && (

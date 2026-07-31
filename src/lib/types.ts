@@ -8,12 +8,17 @@ export interface Profile {
   horizon_days: number;
   adults: number;
   notes: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  country_code: string;
 }
 
 export interface Hotel {
   hotel_id: string;
   name: string;
   is_mine: boolean;
+  rating: number | null;
+  review_count: number | null;
 }
 
 export interface Quote {
@@ -41,6 +46,16 @@ export type Position =
 
 export type Advice = "raise" | "review_low" | "review_high" | "in_line" | null;
 
+export interface RowSignals {
+  holiday: string | null; // holiday name landing on this date
+  nearHoliday: boolean; // date sits inside a long-weekend window
+  weather: { tMax: number; precipProb: number; label: string } | null;
+  eventCount: number;
+  topEvents: string[]; // up to 3 names
+  paceDelta: number | null; // change in sold-out comp count vs ~1 week ago
+  parity: { undercut: number; by: string } | null; // an OTA undercutting my direct rate
+}
+
 export interface GridRow {
   date: string; // check-in date YYYY-MM-DD
   cells: Record<string, RateCell>; // hotelId -> cell
@@ -55,6 +70,7 @@ export interface GridRow {
   momentumPct: number | null; // % change of market median vs ~7 days ago
   position: Position;
   advice: Advice;
+  signals: RowSignals;
 }
 
 export interface GridResponse {

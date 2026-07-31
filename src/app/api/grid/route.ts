@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { addDaysISO, dateRange, todayISO, weekdayOf } from "@/lib/dates";
 import { adviceFor, demandScore, median, positionOf } from "@/lib/insights";
+import { getHolidays, getWeather } from "@/lib/signals";
 import type {
   GridResponse,
   GridRow,
@@ -9,6 +10,7 @@ import type {
   Profile,
   Quote,
   RateCell,
+  RowSignals,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -47,14 +49,22 @@ async function buildGrid(profileId: number | null) {
 
   const linksRes = await supa
     .from("profile_hotels")
-    .select("hotel_id, is_mine, hotels(name)")
+    .select("hotel_id, is_mine, hotels(name, rating, review_count)")
     .eq("profile_id", profile.id)
-    .returns<{ hotel_id: string; is_mine: boolean; hotels: { name: string } | null }[]>();
+    .returns<
+      {
+        hotel_id: string;
+        is_mine: boolean;
+        hotels: { name: string; rating: number | null; review_count: number | null } | null;
+      }[]
+    >();
   if (linksRes.error) throw new Error(`Database query failed: ${linksRes.error.message}`);
   const hotels: Hotel[] = (linksRes.data ?? []).map((l) => ({
     hotel_id: l.hotel_id,
     name: l.hotels?.name ?? l.hotel_id,
     is_mine: l.is_mine,
+    rating: l.hotels?.rating ?? null,
+    review_count: l.hotels?.review_count ?? null,
   }));
   if (hotels.length === 0) return NextResponse.json({ configured: false });
 
@@ -89,6 +99,29 @@ async function buildGrid(profileId: number | null) {
       .order("captured_at", { ascending: false })
       .limit(1),
   ]);
+
+  // External demand signals (all best-effort).
+  const horizonYears = [...new Set([today, horizonEnd].map((d) => Number(d.slice(0, 4))))];
+  const [holidays, weather, eventsRes] = await Promise.all([
+    getHolidays(profile.country_code || "US", horizonYears),
+    profile.latitude != null && profile.longitude != null
+      ? getWeather(profile.latitude, profile.longitude)
+      : Promise.resolve(new Map()),
+    supa
+      .from("events")
+      .select("event_date, name")
+      .eq("profile_id", profile.id)
+      .gte("event_date", today)
+      .lt("event_date", horizonEnd)
+      .order("event_date"),
+  ]);
+  const holidayByDate = new Map(holidays.map((h) => [h.date, h.name]));
+  const eventsByDate = new Map<string, string[]>();
+  for (const e of (eventsRes.data ?? []) as { event_date: string; name: string }[]) {
+    const list = eventsByDate.get(e.event_date) ?? [];
+    list.push(e.name);
+    eventsByDate.set(e.event_date, list);
+  }
 
   const latest = latestRes.data ?? [];
   const hist = histRes.data ?? [];
@@ -164,6 +197,50 @@ async function buildGrid(profileId: number | null) {
     const demand = demandScore(soldOutCount, comps.length, momentumPct);
     const position = positionOf(myPrice, mkt);
 
+    // Booking pace: sold-out comps now vs the oldest capture in the window,
+    // computed over comps that have both readings.
+    let oldSold = 0;
+    let nowSoldAmongOld = 0;
+    let paced = 0;
+    for (const h of comps) {
+      const oldSnap = oldestByKey.get(`${h.hotel_id}|${date}`);
+      const nowSnap = latestByKey.get(`${h.hotel_id}|${date}`);
+      if (!oldSnap || !nowSnap || oldSnap.captured_on >= nowSnap.captured_on) continue;
+      paced++;
+      if (!oldSnap.available) oldSold++;
+      if (!nowSnap.available) nowSoldAmongOld++;
+    }
+    const paceDelta = paced > 0 ? nowSoldAmongOld - oldSold : null;
+
+    // Parity: is an OTA undercutting the baseline hotel's brand-site rate?
+    let parity: RowSignals["parity"] = null;
+    if (myHotel) {
+      const mc = cells[myHotel.hotel_id];
+      if (mc.direct && mc.price != null && mc.offers.length > 0) {
+        const cheapest = mc.offers[0];
+        if (cheapest.total < mc.price - 1) {
+          parity = { undercut: mc.price - cheapest.total, by: cheapest.name };
+        }
+      }
+    }
+
+    const holiday = holidayByDate.get(date) ?? null;
+    const nearHoliday =
+      holiday != null ||
+      holidayByDate.has(addDaysISO(date, 1)) ||
+      holidayByDate.has(addDaysISO(date, -1));
+    const dayEvents = eventsByDate.get(date) ?? [];
+
+    const signals: RowSignals = {
+      holiday,
+      nearHoliday,
+      weather: weather.get(date) ?? null,
+      eventCount: dayEvents.length,
+      topEvents: dayEvents.slice(0, 3),
+      paceDelta,
+      parity,
+    };
+
     return {
       date,
       cells,
@@ -178,6 +255,7 @@ async function buildGrid(profileId: number | null) {
       momentumPct,
       position,
       advice: adviceFor(position, demand),
+      signals,
     };
   });
 
