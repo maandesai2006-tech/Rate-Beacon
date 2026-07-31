@@ -66,7 +66,7 @@ export default function Sparkline({
           stroke="var(--baseline)"
           strokeWidth="1"
         />
-        <path d={d} fill="none" stroke="var(--series-1)" strokeWidth="2" />
+        <path className="spark-draw" d={d} fill="none" stroke="var(--series-1)" strokeWidth="2" />
         {h && (
           <circle
             cx={x(hover as number)}

@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
 import type { GridResponse, GridRow, HistoryPoint, Hotel } from "@/lib/types";
 import Sparkline from "@/components/Sparkline";
@@ -54,6 +61,34 @@ export default function Dashboard() {
   const [drawerDate, setDrawerDate] = useState<string | null>(null);
   const [editingDate, setEditingDate] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  // What the cell held when the edit began — used so simply clicking a cell
+  // and clicking away never writes a manual override.
+  const editOriginal = useRef<string>("");
+  const [headerHidden, setHeaderHidden] = useState(false);
+  const [headerStuck, setHeaderStuck] = useState(false);
+  const [gridScrolled, setGridScrolled] = useState(false);
+
+  // Header floats away on scroll down and returns on scroll up.
+  useEffect(() => {
+    let last = window.scrollY;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const y = window.scrollY;
+        setHeaderStuck(y > 6);
+        if (y > last + 4 && y > 140) setHeaderHidden(true);
+        else if (y < last - 4) setHeaderHidden(false);
+        last = y;
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, []);
 
   useEffect(() => {
     fetch("/api/profiles")
@@ -118,14 +153,27 @@ export default function Dashboard() {
   }
 
   async function saveMyRate(date: string) {
-    if (!profileId) return;
-    const price = editValue.trim() === "" ? null : Number(editValue);
-    if (price != null && (Number.isNaN(price) || price < 0)) return;
+    const raw = editValue.trim();
     setEditingDate(null);
+    // Untouched edit — never persist, so a stray click can't freeze the live
+    // rate behind a manual override.
+    if (!profileId || raw === editOriginal.current.trim()) return;
+    const price = raw === "" ? null : Number(raw);
+    if (price != null && (Number.isNaN(price) || price < 0)) return;
     await fetch("/api/my-rates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profileId, checkIn: date, price }),
+    });
+    await load();
+  }
+
+  async function clearMyRate(date: string) {
+    if (!profileId) return;
+    await fetch("/api/my-rates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profileId, checkIn: date, price: null }),
     });
     await load();
   }
@@ -159,7 +207,7 @@ export default function Dashboard() {
   if (!data) {
     return (
       <Shell>
-        <p className="mt-10 text-sm" style={{ color: "var(--text-muted)" }}>
+        <p className="pulsing mt-10 text-sm" style={{ color: "var(--text-muted)" }}>
           Loading…
         </p>
       </Shell>
@@ -211,8 +259,9 @@ export default function Dashboard() {
     <Shell
       header={
         <div
-          className="flex flex-wrap items-center gap-3 pb-3.5"
-          style={{ borderBottom: "1px solid var(--border)" }}
+          className="app-header flex flex-wrap items-center gap-3"
+          data-hidden={headerHidden}
+          data-stuck={headerStuck}
         >
           <div className="mr-auto">
             <div className="flex items-center gap-2.5">
@@ -280,7 +329,7 @@ export default function Dashboard() {
       )}
 
       {/* Stat tiles */}
-      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+      <div className="stagger mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <StatTile
           value={String(stats.raise)}
           label="nights with room to raise"
@@ -305,7 +354,7 @@ export default function Dashboard() {
           value={stats.avg30 != null ? fmt(stats.avg30) : "—"}
           label="avg market rate, next 30 nights"
         />
-        <div className="card card--frame px-4 py-3.5">
+        <div className="card card--frame card--lift px-4 py-3.5">
           <Corners />
           <div className="flex h-10 items-end gap-1" aria-label="Typical market rate by weekday">
             {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
@@ -313,7 +362,7 @@ export default function Dashboard() {
               return (
                 <div
                   key={wd}
-                  className="flex-1 rounded-t"
+                  className="grow-bar flex-1 rounded-t"
                   title={v != null ? `${WEEKDAYS[wd]}: ${fmt(v)}` : `${WEEKDAYS[wd]}: no data`}
                   style={{
                     height: v != null ? `${Math.max(8, (v / maxWeekday) * 100)}%` : "4px",
@@ -330,23 +379,16 @@ export default function Dashboard() {
       </div>
 
       {/* View tabs */}
-      <div className="mt-6 flex gap-1.5" style={{ borderBottom: "1px solid var(--border)" }}>
-        {(
-          [
-            ["grid", "Rate grid"],
-            ["trends", "Trends"],
-            ["ladder", "Rate ladder"],
-          ] as [Tab, string][]
-        ).map(([t, label]) => (
-          <button key={t} className="tab" data-active={tab === t} onClick={() => setTab(t)}>
-            {label}
-          </button>
-        ))}
-      </div>
+      <TabBar tab={tab} onChange={setTab} />
 
       {tab === "grid" && (
-        <>
-          <div className="mt-4 overflow-x-auto" style={{ border: "1px solid var(--border)" }}>
+        <div className="fade">
+          <div
+            className="card grid-scroll mt-4 overflow-hidden"
+            data-scrolled={gridScrolled}
+            onScroll={(e) => setGridScrolled(e.currentTarget.scrollLeft > 2)}
+            style={{ overflowX: "auto" }}
+          >
             <table className="w-full min-w-[1100px] border-collapse text-[13px]">
               <thead>
                 <tr
@@ -354,7 +396,7 @@ export default function Dashboard() {
                   style={{ background: "var(--surface)" }}
                 >
                   <th
-                    className="th-label sticky left-0 px-3 py-2.5"
+                    className="th-label col-sticky sticky left-0 z-20 px-3 py-2.5"
                     style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}
                   >
                     Check-in
@@ -403,9 +445,13 @@ export default function Dashboard() {
                     editing={editingDate === r.date}
                     editValue={editValue}
                     onStartEdit={() => {
+                      const current = r.myPrice != null ? String(r.myPrice) : "";
+                      editOriginal.current = current;
                       setEditingDate(r.date);
-                      setEditValue(r.myPrice != null ? String(r.myPrice) : "");
+                      setEditValue(current);
                     }}
+                    onClearOverride={() => clearMyRate(r.date)}
+                    myHotelId={myHotel?.hotel_id ?? null}
                     onEditChange={setEditValue}
                     onEditSave={() => saveMyRate(r.date)}
                     onEditCancel={() => setEditingDate(null)}
@@ -438,18 +484,18 @@ export default function Dashboard() {
             ))}
             <span>· rates prefer the brand site&apos;s price when TripAdvisor lists it (hover a cell for all sellers)</span>
           </div>
-        </>
+        </div>
       )}
 
       {tab === "trends" && (
-        <div className="card card--frame mt-4 p-5">
+        <div className="card card--frame rise mt-4 p-5">
           <Corners />
           <TrendChart rows={rows} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
         </div>
       )}
 
       {tab === "ladder" && (
-        <div className="card card--frame mt-4 p-5">
+        <div className="card card--frame rise mt-4 p-5">
           <Corners />
           <RateLadder rows={rows} hotels={hotels} fmt={fmt} />
         </div>
@@ -458,11 +504,11 @@ export default function Dashboard() {
       {/* Tooltip layer */}
       {tooltip && (
         <div
-          className="card pointer-events-none fixed z-50 max-w-[280px] px-3 py-2.5 text-xs"
+          className="card fade pointer-events-none fixed z-50 max-w-[280px] px-3 py-2.5 text-xs"
           style={{
             left: Math.min(tooltip.x + 14, typeof window !== "undefined" ? window.innerWidth - 300 : tooltip.x),
             top: tooltip.y + 14,
-            boxShadow: "var(--shadow)",
+            boxShadow: "var(--shadow-lg)",
           }}
         >
           {tooltip.lines.map((l, i) => (
@@ -500,6 +546,57 @@ function Shell({
   );
 }
 
+// Tabs with an indicator that slides between the active buttons.
+function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
+  const defs: [Tab, string][] = [
+    ["grid", "Rate grid"],
+    ["trends", "Trends"],
+    ["ladder", "Rate ladder"],
+  ];
+  const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
+  const [ind, setInd] = useState({ left: 0, width: 0 });
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = refs.current[tab];
+      if (el) setInd({ left: el.offsetLeft, width: el.offsetWidth });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [tab]);
+
+  return (
+    <div
+      className="tabbar mt-6"
+      style={
+        {
+          borderBottom: "1px solid var(--border)",
+          "--ind-left": `${ind.left}px`,
+          "--ind-width": `${ind.width}px`,
+        } as React.CSSProperties
+      }
+      role="tablist"
+    >
+      {defs.map(([t, label]) => (
+        <button
+          key={t}
+          ref={(el) => {
+            refs.current[t] = el;
+          }}
+          role="tab"
+          aria-selected={tab === t}
+          className="tab"
+          data-active={tab === t}
+          onClick={() => onChange(t)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // Blueprint registration marks for framed cards.
 function Corners({ tone }: { tone?: string }) {
   const style = tone ? { color: tone } : undefined;
@@ -531,7 +628,7 @@ function Mark() {
 
 function StatTile({ value, label, tone }: { value: string; label: string; tone?: string }) {
   return (
-    <div className="card card--frame px-4 py-3.5">
+    <div className="card card--frame card--lift px-4 py-3.5">
       <Corners />
       <div
         className="tabular-nums"
@@ -566,8 +663,10 @@ function GridRowView({
   onEditChange,
   onEditSave,
   onEditCancel,
+  onClearOverride,
   onOpen,
   onTooltip,
+  myHotelId,
 }: {
   row: GridRow;
   comps: Hotel[];
@@ -578,8 +677,10 @@ function GridRowView({
   onEditChange: (v: string) => void;
   onEditSave: () => void;
   onEditCancel: () => void;
+  onClearOverride: () => void;
   onOpen: () => void;
   onTooltip: (t: TooltipState | null) => void;
+  myHotelId: string | null;
 }) {
   const weekend = [5, 6].includes(new Date(`${row.date}T00:00:00Z`).getUTCDay());
   const advice = row.advice ? ADVICE_META[row.advice] : null;
@@ -610,14 +711,14 @@ function GridRowView({
 
   return (
     <tr
-      className="border-t"
+      className="row-hover border-t"
       style={{
         borderColor: "var(--gridline)",
         background: weekend ? "color-mix(in oklab, var(--surface-2) 55%, transparent)" : undefined,
       }}
     >
       <td
-        className="sticky left-0 whitespace-nowrap px-3 py-1.5"
+        className="col-sticky sticky left-0 z-10 whitespace-nowrap px-3 py-1.5"
         style={{
           background: weekend
             ? "color-mix(in oklab, var(--surface-2) 55%, var(--surface))"
@@ -653,10 +754,28 @@ function GridRowView({
         ) : row.myPrice != null ? (
           <>
             {fmt(row.myPrice)}
-            {row.myPriceSource === "manual" && (
-              <span className="ml-1 text-xs" style={{ color: "var(--text-muted)" }} title="Entered manually">
-                ✎
-              </span>
+            {row.myPriceSource === "manual" ? (
+              <button
+                className="ml-1 text-[10px] align-super"
+                style={{ color: "var(--status-warning)" }}
+                title="Manual override — click to restore the live rate"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClearOverride();
+                }}
+              >
+                M
+              </button>
+            ) : (
+              row.cells[myHotelId ?? ""]?.direct && (
+                <span
+                  className="ml-0.5 align-super text-[9px]"
+                  style={{ color: "var(--text-muted)" }}
+                  title="Brand-site rate"
+                >
+                  D
+                </span>
+              )
             )}
           </>
         ) : (
@@ -1059,7 +1178,7 @@ function RateLadder({
             <div className="relative h-[22px] flex-1 overflow-hidden" style={{ background: "var(--surface-2)" }}>
               {price != null && (
                 <div
-                  className="h-full"
+                  className="grow-bar h-full"
                   style={{
                     width: `${(price / maxPrice) * 100}%`,
                     background: hotel.is_mine
@@ -1139,10 +1258,14 @@ function HistoryDrawer({
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
+      <div className="fade fixed inset-0 z-40 bg-black/45" onClick={onClose} />
       <aside
-        className="fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto border-l p-5"
-        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+        className="slide-in fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto border-l p-5"
+        style={{
+          background: "var(--surface)",
+          borderColor: "var(--border)",
+          boxShadow: "var(--shadow-lg)",
+        }}
         role="dialog"
         aria-label={`Price history for ${dateLabel(row.date)}`}
       >
