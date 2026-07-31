@@ -48,7 +48,15 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/grid");
-      const j = await res.json();
+      const text = await res.text();
+      let j: GridPayload & { error?: string };
+      try {
+        j = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `The server returned an unexpected ${res.status} response. This usually means environment variables are missing on the deployment — in Vercel, check SUPABASE_URL (no /rest/v1/ at the end) and SUPABASE_SERVICE_ROLE_KEY are set for Production, then redeploy.`
+        );
+      }
       if (!res.ok) throw new Error(j.error ?? `Failed to load (${res.status})`);
       setData(j);
       setError(null);
@@ -66,7 +74,13 @@ export default function Dashboard() {
     setRefreshMsg(null);
     try {
       const res = await fetch("/api/refresh", { method: "POST" });
-      const j = await res.json();
+      const text = await res.text();
+      let j: { rowsWritten?: number; errors?: string[]; error?: string };
+      try {
+        j = JSON.parse(text);
+      } catch {
+        throw new Error(`server returned ${res.status} — try again, or check the Vercel function logs`);
+      }
       if (!res.ok) throw new Error(j.error ?? "Refresh failed");
       setRefreshMsg(
         j.errors?.length

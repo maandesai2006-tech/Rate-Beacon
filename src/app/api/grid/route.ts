@@ -23,13 +23,28 @@ interface SnapshotRow {
 }
 
 export async function GET() {
+  try {
+    return await buildGrid();
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+  }
+}
+
+async function buildGrid() {
   const supa = db();
   const today = todayISO();
 
-  const [{ data: settings }, { data: hotels }] = await Promise.all([
+  const [settingsRes, hotelsRes] = await Promise.all([
     supa.from("settings").select("*").eq("id", 1).maybeSingle<Settings>(),
     supa.from("hotels").select("*").returns<Hotel[]>(),
   ]);
+  // Surface real query failures (bad URL/key) instead of "not configured".
+  const qErr = settingsRes.error ?? hotelsRes.error;
+  if (qErr) {
+    throw new Error(`Database query failed: ${qErr.message}`);
+  }
+  const settings = settingsRes.data;
+  const hotels = hotelsRes.data;
   if (!settings || !hotels || hotels.length === 0) {
     return NextResponse.json({ configured: false });
   }
