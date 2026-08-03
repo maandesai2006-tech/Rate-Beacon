@@ -4,11 +4,13 @@ import { addDaysISO, dateRange, todayISO, weekdayOf } from "@/lib/dates";
 import { adviceFor, demandScore, median, positionOf } from "@/lib/insights";
 import { getHolidays, getWeather } from "@/lib/signals";
 import type {
+  Baseline,
   GridResponse,
   GridRow,
   Hotel,
   Profile,
   Quote,
+  RankStat,
   RateCell,
   RowSignals,
 } from "@/lib/types";
@@ -30,13 +32,14 @@ interface SnapshotRow {
 export async function GET(req: NextRequest) {
   try {
     const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
-    return await buildGrid(profileId);
+    const baselineId = req.nextUrl.searchParams.get("baselineId");
+    return await buildGrid(profileId, baselineId);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }
 
-async function buildGrid(profileId: number | null) {
+async function buildGrid(profileId: number | null, baselineIdParam: string | null) {
   const supa = db();
   const today = todayISO();
 
@@ -47,26 +50,76 @@ async function buildGrid(profileId: number | null) {
   const profile = profileRes.data;
   if (!profile) return NextResponse.json({ configured: false });
 
-  const linksRes = await supa
-    .from("profile_hotels")
-    .select("hotel_id, is_mine, hotels(name, rating, review_count)")
-    .eq("profile_id", profile.id)
-    .returns<
-      {
-        hotel_id: string;
-        is_mine: boolean;
-        hotels: { name: string; rating: number | null; review_count: number | null } | null;
-      }[]
-    >();
+  type HotelRow = {
+    name: string;
+    rating: number | null;
+    review_count: number | null;
+    latitude: number | null;
+    longitude: number | null;
+  };
+  const [linksRes, compsRes] = await Promise.all([
+    supa
+      .from("profile_hotels")
+      .select("hotel_id, is_mine, hotels(name, rating, review_count, latitude, longitude)")
+      .eq("profile_id", profile.id)
+      .returns<{ hotel_id: string; is_mine: boolean; hotels: HotelRow | null }[]>(),
+    supa
+      .from("baseline_comps")
+      .select("baseline_hotel_id, comp_hotel_id")
+      .eq("profile_id", profile.id)
+      .returns<{ baseline_hotel_id: string; comp_hotel_id: string }[]>(),
+  ]);
   if (linksRes.error) throw new Error(`Database query failed: ${linksRes.error.message}`);
-  const hotels: Hotel[] = (linksRes.data ?? []).map((l) => ({
+
+  const allTracked: Hotel[] = (linksRes.data ?? []).map((l) => ({
     hotel_id: l.hotel_id,
     name: l.hotels?.name ?? l.hotel_id,
     is_mine: l.is_mine,
     rating: l.hotels?.rating ?? null,
     review_count: l.hotels?.review_count ?? null,
+    latitude: l.hotels?.latitude ?? null,
+    longitude: l.hotels?.longitude ?? null,
   }));
-  if (hotels.length === 0) return NextResponse.json({ configured: false });
+  if (allTracked.length === 0) return NextResponse.json({ configured: false });
+
+  // Competitor sets per baseline; they may overlap.
+  const compsByBaseline = new Map<string, string[]>();
+  for (const c of compsRes.data ?? []) {
+    const list = compsByBaseline.get(c.baseline_hotel_id) ?? [];
+    list.push(c.comp_hotel_id);
+    compsByBaseline.set(c.baseline_hotel_id, list);
+  }
+
+  const baselines: Baseline[] = allTracked
+    .filter((h) => h.is_mine)
+    .map((h) => ({
+      hotel_id: h.hotel_id,
+      name: h.name,
+      compCount: compsByBaseline.get(h.hotel_id)?.length ?? 0,
+    }));
+
+  const activeBaselineId =
+    (baselineIdParam && baselines.some((b) => b.hotel_id === baselineIdParam)
+      ? baselineIdParam
+      : baselines[0]?.hotel_id) ?? null;
+
+  // The grid shows the active baseline plus its own competitor set. When no
+  // set is configured, fall back to every other tracked hotel.
+  const compIds =
+    activeBaselineId && compsByBaseline.has(activeBaselineId)
+      ? (compsByBaseline.get(activeBaselineId) as string[])
+      : allTracked.filter((h) => h.hotel_id !== activeBaselineId).map((h) => h.hotel_id);
+  const compIdSet = new Set(compIds);
+
+  const byId = new Map(allTracked.map((h) => [h.hotel_id, h]));
+  const hotels: Hotel[] = [
+    ...(activeBaselineId && byId.has(activeBaselineId)
+      ? [{ ...(byId.get(activeBaselineId) as Hotel), is_mine: true }]
+      : []),
+    ...allTracked
+      .filter((h) => compIdSet.has(h.hotel_id) && h.hotel_id !== activeBaselineId)
+      .map((h) => ({ ...h, is_mine: false })),
+  ];
 
   const hotelIds = hotels.map((h) => h.hotel_id);
   const horizonEnd = addDaysISO(today, profile.horizon_days);
@@ -145,6 +198,34 @@ async function buildGrid(profileId: number | null) {
 
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
+
+  // Ladder standing: rank by price (1 = most expensive) per night, comparing
+  // the latest capture with the one before it for a day-over-day move, plus a
+  // mean position across the next 30 nights.
+  const capturesByKey = new Map<string, SnapshotRow[]>();
+  for (const r of hist) {
+    const k = `${r.hotel_id}|${r.check_in}`;
+    const list = capturesByKey.get(k) ?? [];
+    list.push(r);
+    capturesByKey.set(k, list);
+  }
+  function ranksFor(date: string, pick: (rows: SnapshotRow[]) => SnapshotRow | undefined) {
+    const priced = hotels
+      .map((h) => {
+        const rows = (capturesByKey.get(`${h.hotel_id}|${date}`) ?? [])
+          .slice()
+          .sort((a, b) => a.captured_on.localeCompare(b.captured_on));
+        const snap = pick(rows);
+        return snap?.available && snap.price != null
+          ? { id: h.hotel_id, price: snap.price }
+          : null;
+      })
+      .filter((x): x is { id: string; price: number } => x != null)
+      .sort((a, b) => b.price - a.price);
+    const map = new Map<string, number>();
+    priced.forEach((p, i) => map.set(p.id, i + 1));
+    return map;
+  }
 
   const rows: GridRow[] = dateRange(today, profile.horizon_days).map((date) => {
     const cells: Record<string, RateCell> = {};
@@ -266,9 +347,36 @@ async function buildGrid(profileId: number | null) {
     return { weekday, avgMedian: meds.length ? median(meds) : null };
   });
 
+  // Tonight's ladder, the previous capture's ladder, and the 30-night mean.
+  const rankToday = ranksFor(today, (rows) => rows[rows.length - 1]);
+  const rankPrev = ranksFor(today, (rows) => (rows.length >= 2 ? rows[rows.length - 2] : undefined));
+  const next30 = dateRange(today, Math.min(30, profile.horizon_days));
+  const ranksPerDate = next30.map((d) => ranksFor(d, (rows) => rows[rows.length - 1]));
+
+  const rankStats: RankStat[] = hotels.map((h) => {
+    const now = rankToday.get(h.hotel_id) ?? null;
+    const before = rankPrev.get(h.hotel_id) ?? null;
+    const positions = ranksPerDate
+      .map((m) => m.get(h.hotel_id))
+      .filter((v): v is number => v != null);
+    return {
+      hotel_id: h.hotel_id,
+      rankToday: now,
+      // Ladder is most-expensive-first, so a smaller number is higher up.
+      rankDelta: now != null && before != null ? before - now : null,
+      avgRank30: positions.length
+        ? positions.reduce((a, b) => a + b, 0) / positions.length
+        : null,
+      pricedCount: rankToday.size,
+    };
+  });
+
   const payload: GridResponse & { configured: boolean } = {
     configured: true,
     profile,
+    baselines,
+    activeBaselineId,
+    rankStats,
     hotels,
     rows,
     weekdayAvg,

@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { getRates } from "./xotelo";
 import { addDaysISO, dateRange, todayISO } from "./dates";
-import { refreshEvents, refreshRatings } from "./enrich";
+import { refreshEvents, refreshGeo, refreshRatings } from "./enrich";
 import type { Profile } from "./types";
 
 export interface SnapshotResult {
@@ -125,6 +125,7 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
   // Best-effort enrichment: local events + review standing.
   errors.push(...(await refreshEvents(supa, profiles)));
   errors.push(...(await refreshRatings(supa, profiles)));
+  errors.push(...(await refreshGeo(supa, profiles)));
 
   return {
     profiles: profiles.length,

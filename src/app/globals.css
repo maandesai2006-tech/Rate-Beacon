@@ -48,7 +48,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --page: #0c1119;
     --page-glow: radial-gradient(1200px 520px at 15% -8%, #16243a 0%, transparent 62%),
@@ -85,6 +85,43 @@
     --delta-good-text: #35c07e;
   }
 }
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0c1119;
+    --page-glow: radial-gradient(1200px 520px at 15% -8%, #16243a 0%, transparent 62%),
+      radial-gradient(900px 420px at 92% -4%, #131e30 0%, transparent 58%);
+    --surface: #141b26;
+    --surface-2: #1c2533;
+    --text-primary: #f2f6fc;
+    --text-secondary: #b4c0d2;
+    --text-muted: #828fa4;
+    --gridline: #243040;
+    --baseline: #3a4757;
+    --border: rgba(226, 236, 250, 0.11);
+
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 30px -16px rgba(0, 0, 0, 0.75);
+    --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.55), 0 28px 64px -24px rgba(0, 0, 0, 0.85);
+    --shadow-edge: 8px 0 18px -10px rgba(0, 0, 0, 0.75);
+
+    --accent: #4c9aff;
+    --accent-600: #6aacff;
+    --accent-700: #8cc0ff;
+    --accent-soft: rgba(76, 154, 255, 0.18);
+    --accent-ink: #07111f;
+
+    --series-1: #4c9aff;
+    --div-low: #4c9aff;
+    --div-mid: #1e2836;
+    --div-high: #ff6f66;
+
+    --status-good: #35c07e;
+    --status-warning: #e0a83c;
+    --status-serious: #f08a55;
+    --status-critical: #f2706a;
+    --delta-good-text: #35c07e;
+  }
 
 html,
 body {

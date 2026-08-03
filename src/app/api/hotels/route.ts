@@ -5,6 +5,11 @@ import { listHotels, parseTripAdvisorRef } from "@/lib/xotelo";
 //   ?ref=<TripAdvisor URL or key>  → parse it; if it names a hotel, echo it
 //                                    back, and list neighbors in its location
 //   ?locationKey=g123&offset=0     → page through hotels in a location
+//
+// A pasted hotel link must resolve even when the location listing fails
+// (Xotelo's /list is flaky and isn't needed to add one hotel by URL), so the
+// listing runs best-effort and its failure is reported alongside the hotel
+// rather than failing the whole request.
 export async function GET(req: NextRequest) {
   const ref = req.nextUrl.searchParams.get("ref")?.trim();
   const locationKeyParam = req.nextUrl.searchParams.get("locationKey")?.trim();
@@ -15,11 +20,11 @@ export async function GET(req: NextRequest) {
 
   if (ref) {
     const parsed = parseTripAdvisorRef(ref);
-    if (!parsed.locationKey) {
+    if (!parsed.locationKey && !parsed.hotelKey) {
       return NextResponse.json(
         {
           error:
-            "Couldn't find a TripAdvisor id in that link. Paste a hotel page URL like …/Hotel_Review-g187147-d197685-Reviews-….html",
+            "Couldn't find a TripAdvisor id in that link. Open the hotel on tripadvisor.com and paste the page URL — it looks like …/Hotel_Review-g187147-d197685-Reviews-….html",
         },
         { status: 400 }
       );
@@ -33,15 +38,25 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "ref or locationKey required" }, { status: 400 });
   }
 
+  let hotels: { hotelKey: string; name: string }[] = [];
+  let listError: string | null = null;
   try {
-    const hotels = await listHotels(locationKey, offset, 30);
-    // If the pasted hotel is in the list, use the list's cleaner name.
-    if (pastedHotel && !pastedHotel.name) {
-      const match = hotels.find((h) => h.hotelKey === pastedHotel!.hotelKey);
-      if (match) pastedHotel.name = match.name;
-    }
-    return NextResponse.json({ locationKey, pastedHotel, hotels });
+    hotels = await listHotels(locationKey, offset, 30);
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 502 });
+    listError = (e as Error).message;
   }
+
+  if (pastedHotel) {
+    // Prefer the listing's cleaner name when we can find it there.
+    const match = hotels.find((h) => h.hotelKey === pastedHotel!.hotelKey);
+    if (match) pastedHotel.name = match.name;
+    if (!pastedHotel.name) pastedHotel.name = pastedHotel.hotelKey;
+    return NextResponse.json({ locationKey, pastedHotel, hotels, listError });
+  }
+
+  // No specific hotel was pasted, so the listing is the whole answer.
+  if (listError) {
+    return NextResponse.json({ error: listError }, { status: 502 });
+  }
+  return NextResponse.json({ locationKey, pastedHotel: null, hotels, listError: null });
 }

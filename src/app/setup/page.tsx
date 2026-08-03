@@ -138,9 +138,11 @@ export default function SetupPage() {
     );
   }
 
+  // Several hotels in one profile can be "mine"; each gets its own
+  // competitor set on the dashboard.
   function setMine(hotelKey: string) {
     setPicked((p) =>
-      p.map((x) => ({ ...x, isMine: x.hotelKey === hotelKey ? !x.isMine : false }))
+      p.map((x) => (x.hotelKey === hotelKey ? { ...x, isMine: !x.isMine } : x))
     );
   }
 
@@ -226,9 +228,10 @@ export default function SetupPage() {
               Tracking {picked.length} hotel{picked.length > 1 ? "s" : ""}
             </h3>
             <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Tick &ldquo;mine&rdquo; on the baseline hotel. Leave it unticked
-              everywhere if it isn&apos;t on TripAdvisor — rates can be typed into
-              the grid instead.
+              Tick &ldquo;mine&rdquo; on every hotel you own — the dashboard lets
+              you switch between them, each against its own competitor set. Leave
+              it unticked if a hotel isn&apos;t on TripAdvisor; rates can be typed
+              into the grid instead.
             </p>
             <ul className="mt-2 space-y-1">
               {picked.map((h) => (

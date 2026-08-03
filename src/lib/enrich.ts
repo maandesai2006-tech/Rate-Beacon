@@ -4,6 +4,7 @@
 
 import { SupabaseClient } from "@supabase/supabase-js";
 import { getTicketmasterEvents } from "./signals";
+import { geocodeHotel } from "./geo";
 import { listHotels } from "./xotelo";
 import { addDaysISO, todayISO } from "./dates";
 import type { Profile } from "./types";
@@ -43,6 +44,58 @@ export async function refreshEvents(
       if (error) errors.push(`events(${p.name}): ${error.message}`);
     } catch (e) {
       errors.push(`events(${p.name}): ${(e as Error).message}`);
+    }
+  }
+  return errors;
+}
+
+// Fill in coordinates for hotels that lack them, so the map view can plot
+// them. Runs a few per snapshot (Nominatim asks for ~1 req/s) and never
+// retries a hotel that already has a fix.
+export async function refreshGeo(
+  supa: SupabaseClient,
+  profiles: Profile[]
+): Promise<string[]> {
+  const errors: string[] = [];
+  const { data: missing } = await supa
+    .from("hotels")
+    .select("hotel_id, name, city_code")
+    .is("latitude", null)
+    .limit(12)
+    .returns<{ hotel_id: string; name: string; city_code: string | null }[]>();
+  if (!missing?.length) return errors;
+
+  const marketByCity = new Map(
+    profiles
+      .filter((p) => p.city_code)
+      .map((p) => [p.city_code as string, p.city_name ?? ""])
+  );
+
+  for (const h of missing) {
+    try {
+      const near = marketByCity.get(h.city_code ?? "") || "Florida, USA";
+      const geo = await geocodeHotel(h.name, near);
+      if (!geo) {
+        // Mark the attempt so a permanently unfindable hotel is not retried
+        // on every single run.
+        await supa
+          .from("hotels")
+          .update({ geo_updated_at: new Date().toISOString() })
+          .eq("hotel_id", h.hotel_id);
+        continue;
+      }
+      const { error } = await supa
+        .from("hotels")
+        .update({
+          latitude: geo.latitude,
+          longitude: geo.longitude,
+          address: geo.address,
+          geo_updated_at: new Date().toISOString(),
+        })
+        .eq("hotel_id", h.hotel_id);
+      if (error) errors.push(`geo(${h.name}): ${error.message}`);
+    } catch (e) {
+      errors.push(`geo(${h.name}): ${(e as Error).message}`);
     }
   }
   return errors;

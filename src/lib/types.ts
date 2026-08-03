@@ -19,6 +19,23 @@ export interface Hotel {
   is_mine: boolean;
   rating: number | null;
   review_count: number | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+export interface Baseline {
+  hotel_id: string;
+  name: string;
+  compCount: number;
+}
+
+// Ladder standing for one hotel, across the horizon.
+export interface RankStat {
+  hotel_id: string;
+  rankToday: number | null;      // 1 = most expensive tonight
+  rankDelta: number | null;      // vs the previous capture; + = moved up
+  avgRank30: number | null;      // mean ladder position over the next 30 nights
+  pricedCount: number;           // hotels ranked tonight
 }
 
 export interface Quote {
@@ -75,6 +92,9 @@ export interface GridRow {
 
 export interface GridResponse {
   profile: Profile;
+  baselines: Baseline[];
+  activeBaselineId: string | null;
+  rankStats: RankStat[];
   hotels: Hotel[];
   rows: GridRow[];
   weekdayAvg: { weekday: number; avgMedian: number | null }[];

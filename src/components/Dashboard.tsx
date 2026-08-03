@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
-import type { GridResponse, GridRow, HistoryPoint, Hotel } from "@/lib/types";
+import type { GridResponse, GridRow, HistoryPoint, Hotel, RankStat } from "@/lib/types";
 import Sparkline from "@/components/Sparkline";
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
@@ -47,11 +47,14 @@ interface TooltipState {
   lines: string[];
 }
 
-type Tab = "grid" | "trends" | "ladder";
+type Tab = "grid" | "trends" | "ladder" | "map";
+type Theme = "light" | "dark" | "system";
 
 export default function Dashboard() {
   const [profiles, setProfiles] = useState<ProfileStub[]>([]);
   const [profileId, setProfileId] = useState<number | null>(null);
+  const [baselineId, setBaselineId] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>("system");
   const [data, setData] = useState<GridPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("grid");
@@ -67,6 +70,18 @@ export default function Dashboard() {
   const [headerHidden, setHeaderHidden] = useState(false);
   const [headerStuck, setHeaderStuck] = useState(false);
   const [gridScrolled, setGridScrolled] = useState(false);
+
+  // Theme: explicit light/dark stamp on <html>, or follow the OS.
+  useEffect(() => {
+    const saved = (localStorage.getItem("rb-theme") as Theme | null) ?? "system";
+    setTheme(saved);
+  }, []);
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", theme);
+    localStorage.setItem("rb-theme", theme);
+  }, [theme]);
 
   // Header floats away on scroll down and returns on scroll up.
   useEffect(() => {
@@ -103,8 +118,10 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const qs = profileId ? `?profileId=${profileId}` : "";
-      const res = await fetch(`/api/grid${qs}`);
+      const qs = new URLSearchParams();
+      if (profileId) qs.set("profileId", String(profileId));
+      if (baselineId) qs.set("baselineId", baselineId);
+      const res = await fetch(`/api/grid?${qs}`);
       const text = await res.text();
       let j: GridPayload & { error?: string };
       try {
@@ -116,11 +133,12 @@ export default function Dashboard() {
       }
       if (!res.ok) throw new Error(j.error ?? `Failed to load (${res.status})`);
       setData(j);
+      if (j.configured && j.activeBaselineId) setBaselineId(j.activeBaselineId);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [profileId]);
+  }, [profileId, baselineId]);
 
   useEffect(() => {
     load();
@@ -232,7 +250,7 @@ export default function Dashboard() {
     );
   }
 
-  const { profile, hotels, rows, weekdayAvg, lastCapturedAt } = data;
+  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats } = data;
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
@@ -297,6 +315,7 @@ export default function Dashboard() {
                 : "no rates fetched yet"}
             </p>
           </div>
+          <ThemeToggle theme={theme} onChange={setTheme} />
           <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-[13px]">
             Edit profile
           </Link>
@@ -313,6 +332,39 @@ export default function Dashboard() {
         </div>
       }
     >
+      {baselines.length > 1 && (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="kicker" style={{ color: "var(--text-muted)" }}>
+            My hotel
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {baselines.map((b) => (
+              <button
+                key={b.hotel_id}
+                onClick={() => setBaselineId(b.hotel_id)}
+                className="btn-ghost px-3 py-1.5 text-[12px]"
+                data-on={b.hotel_id === baselineId}
+                style={
+                  b.hotel_id === baselineId
+                    ? {
+                        borderColor: "var(--accent)",
+                        background: "var(--accent-soft)",
+                        color: "var(--accent)",
+                      }
+                    : undefined
+                }
+                title={`${b.compCount} competitors tracked for this hotel`}
+              >
+                {b.name}
+                <span className="ml-1.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
+                  {b.compCount}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {refreshMsg && (
         <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
           {refreshMsg}
@@ -497,7 +549,14 @@ export default function Dashboard() {
       {tab === "ladder" && (
         <div className="card card--frame rise mt-4 p-5">
           <Corners />
-          <RateLadder rows={rows} hotels={hotels} fmt={fmt} />
+          <RateLadder rows={rows} hotels={hotels} fmt={fmt} rankStats={rankStats} />
+        </div>
+      )}
+
+      {tab === "map" && (
+        <div className="card card--frame rise mt-4 p-5">
+          <Corners />
+          <MapView rows={rows} hotels={hotels} fmt={fmt} />
         </div>
       )}
 
@@ -552,6 +611,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
     ["grid", "Rate grid"],
     ["trends", "Trends"],
     ["ladder", "Rate ladder"],
+    ["map", "Map"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
   const [ind, setInd] = useState({ left: 0, width: 0 });
@@ -593,6 +653,325 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
           {label}
         </button>
       ))}
+    </div>
+  );
+}
+
+// Day-over-day ladder move plus the hotel's mean position over 30 nights.
+function RankInsight({ stat, live }: { stat?: RankStat; live: boolean }) {
+  if (!stat) return <span className="w-[124px]" />;
+  const { rankDelta, avgRank30 } = stat;
+  const up = rankDelta != null && rankDelta > 0;
+  const down = rankDelta != null && rankDelta < 0;
+  return (
+    <span className="flex w-[124px] items-center justify-end gap-2 text-[11px] tabular-nums">
+      {live && rankDelta != null && rankDelta !== 0 ? (
+        <span
+          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 font-semibold"
+          style={{
+            color: up ? "var(--delta-good-text)" : "var(--status-critical)",
+            background: "color-mix(in oklab, currentColor 13%, transparent)",
+            borderRadius: 4,
+          }}
+          title={
+            up
+              ? `Moved up ${rankDelta} place${rankDelta === 1 ? "" : "s"} since the previous capture`
+              : `Slipped ${Math.abs(rankDelta as number)} place${Math.abs(rankDelta as number) === 1 ? "" : "s"} since the previous capture`
+          }
+        >
+          <span aria-hidden>{up ? "▲" : "▼"}</span>
+          {up ? "+" : ""}
+          {rankDelta}
+        </span>
+      ) : (
+        <span style={{ color: "var(--text-muted)" }} title="No day-over-day change recorded yet">
+          {live && rankDelta === 0 ? "—" : ""}
+        </span>
+      )}
+      <span
+        style={{ color: "var(--text-secondary)" }}
+        title="Average ladder position across the next 30 nights"
+      >
+        {avgRank30 != null ? `#${avgRank30.toFixed(1)}` : "—"}
+      </span>
+    </span>
+  );
+}
+
+function ThemeToggle({
+  theme,
+  onChange,
+}: {
+  theme: Theme;
+  onChange: (t: Theme) => void;
+}) {
+  const opts: [Theme, string, string][] = [
+    ["light", "Light", "M12 4v1.5M12 18.5V20M4 12h1.5M18.5 12H20M6.3 6.3l1.1 1.1M16.6 16.6l1.1 1.1M17.7 6.3l-1.1 1.1M7.4 16.6l-1.1 1.1"],
+    ["dark", "Dark", "M20 13.5A8 8 0 1 1 10.5 4a6.5 6.5 0 0 0 9.5 9.5z"],
+    ["system", "System", "M4 5h16v10H4zM9 19h6"],
+  ];
+  return (
+    <div
+      className="inline-flex overflow-hidden"
+      style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface)" }}
+      role="group"
+      aria-label="Colour theme"
+    >
+      {opts.map(([value, label, path]) => (
+        <button
+          key={value}
+          onClick={() => onChange(value)}
+          title={label}
+          aria-label={label}
+          aria-pressed={theme === value}
+          className="px-2.5 py-1.5"
+          style={{
+            background: theme === value ? "var(--accent)" : "transparent",
+            color: theme === value ? "var(--accent-ink)" : "var(--text-secondary)",
+            transition: "background .18s var(--ease), color .18s var(--ease)",
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+            {value === "light" && <circle cx="12" cy="12" r="4" />}
+            <path d={path} />
+          </svg>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Spatial rate view: hotels plotted on an equirectangular projection of the
+// market, coloured by price against tonight's median. Not a street map — the
+// point is to read price by area at a glance.
+function MapView({
+  rows,
+  hotels,
+  fmt,
+}: {
+  rows: GridRow[];
+  hotels: Hotel[];
+  fmt: (n: number) => string;
+}) {
+  const [idx, setIdx] = useState(0);
+  const [hover, setHover] = useState<string | null>(null);
+  const row = rows[Math.min(idx, rows.length - 1)];
+
+  const located = hotels.filter(
+    (h) => h.latitude != null && h.longitude != null
+  );
+  if (!row) return null;
+  if (located.length < 2) {
+    return (
+      <div>
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+          Hotel coordinates are still being looked up.
+        </p>
+        <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+          The daily job geocodes a few hotels per run (OpenStreetMap asks for a
+          slow crawl), so the map fills in over the next couple of refreshes.
+          {located.length === 1 ? " 1 hotel located so far." : " None located yet."}
+        </p>
+      </div>
+    );
+  }
+
+  const W = 920;
+  const H = 460;
+  const pad = 54;
+  const lats = located.map((h) => h.latitude as number);
+  const lons = located.map((h) => h.longitude as number);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  // Keep the aspect ratio honest: a degree of longitude shrinks with latitude.
+  const midLat = (minLat + maxLat) / 2;
+  const lonScale = Math.cos((midLat * Math.PI) / 180);
+  const spanLat = Math.max(maxLat - minLat, 0.004);
+  const spanLon = Math.max((maxLon - minLon) * lonScale, 0.004);
+  const scale = Math.min((W - 2 * pad) / spanLon, (H - 2 * pad) / spanLat);
+  const cx = (lon: number) =>
+    W / 2 + ((lon - (minLon + maxLon) / 2) * lonScale) * scale;
+  const cy = (lat: number) => H / 2 - (lat - midLat) * scale;
+
+  const mkt = row.median;
+  function tone(price: number | null): string {
+    if (price == null || mkt == null || mkt === 0) return "var(--text-muted)";
+    const pct = ((price - mkt) / mkt) * 100;
+    if (pct <= -15) return "var(--div-low)";
+    if (pct <= -5) return "color-mix(in oklab, var(--div-low) 60%, var(--surface))";
+    if (pct < 5) return "var(--baseline)";
+    if (pct < 15) return "color-mix(in oklab, var(--div-high) 60%, var(--surface))";
+    return "var(--div-high)";
+  }
+
+  const points = located
+    .map((h) => {
+      const c = row.cells[h.hotel_id];
+      const price = h.is_mine ? row.myPrice ?? c?.price ?? null : c?.price ?? null;
+      return { hotel: h, price, x: cx(h.longitude as number), y: cy(h.latitude as number) };
+    })
+    .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
+
+  const hovered = points.find((p) => p.hotel.hotel_id === hover) ?? null;
+  const scaleBarKm = 2;
+  const kmInDeg = scaleBarKm / 111;
+  const scaleBarPx = kmInDeg * scale;
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          className="btn-ghost h-9 w-9 text-sm disabled:opacity-45"
+          onClick={() => setIdx(Math.max(0, idx - 1))}
+          disabled={idx === 0}
+          aria-label="Previous night"
+        >
+          ←
+        </button>
+        <select
+          value={idx}
+          onChange={(e) => setIdx(Number(e.target.value))}
+          className="btn-ghost px-2.5 py-1.5 text-[13px]"
+        >
+          {rows.map((r, i) => (
+            <option key={r.date} value={i}>
+              {dateLabel(r.date)}
+            </option>
+          ))}
+        </select>
+        <button
+          className="btn-ghost h-9 w-9 text-sm disabled:opacity-45"
+          onClick={() => setIdx(Math.min(rows.length - 1, idx + 1))}
+          disabled={idx >= rows.length - 1}
+          aria-label="Next night"
+        >
+          →
+        </button>
+        <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
+          {row.median != null && <>market median {fmt(row.median)} · </>}
+          {located.length} of {hotels.length} hotels located
+        </span>
+      </div>
+
+      <div className="relative mt-3 overflow-x-auto">
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full min-w-[620px]"
+          role="img"
+          aria-label="Hotels plotted by location, coloured by price against the market median"
+        >
+          <defs>
+            <pattern id="rb-grid" width="46" height="46" patternUnits="userSpaceOnUse">
+              <path d="M46 0H0V46" fill="none" stroke="var(--gridline)" strokeWidth="1" />
+            </pattern>
+          </defs>
+          <rect x="0" y="0" width={W} height={H} fill="url(#rb-grid)" opacity="0.7" />
+
+          {/* Distance rings around each of my hotels */}
+          {points
+            .filter((p) => p.hotel.is_mine)
+            .map((p) =>
+              [1, 2, 4].map((km) => (
+                <circle
+                  key={`${p.hotel.hotel_id}-${km}`}
+                  cx={p.x}
+                  cy={p.y}
+                  r={(km / 111) * scale}
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeOpacity={0.16}
+                  strokeDasharray="4 5"
+                />
+              ))
+            )}
+
+          {points.map((p) => {
+            const r = p.hotel.is_mine ? 11 : 8;
+            const isHover = hover === p.hotel.hotel_id;
+            return (
+              <g
+                key={p.hotel.hotel_id}
+                onMouseEnter={() => setHover(p.hotel.hotel_id)}
+                onMouseLeave={() => setHover(null)}
+                style={{ cursor: "pointer" }}
+              >
+                <circle
+                  cx={p.x}
+                  cy={p.y}
+                  r={r + (isHover ? 4 : 0)}
+                  fill={tone(p.price)}
+                  stroke="var(--surface)"
+                  strokeWidth="2.5"
+                  style={{ transition: "r .18s var(--ease)" }}
+                />
+                {p.hotel.is_mine && (
+                  <path
+                    d="M0,-5.5 L1.5,-1.7 L5.6,-1.7 L2.3,0.7 L3.5,4.6 L0,2.2 L-3.5,4.6 L-2.3,0.7 L-5.6,-1.7 L-1.5,-1.7 Z"
+                    transform={`translate(${p.x},${p.y})`}
+                    fill="var(--accent-ink)"
+                  />
+                )}
+                {p.price != null && (
+                  <text
+                    x={p.x}
+                    y={p.y - r - 7}
+                    textAnchor="middle"
+                    fontSize="11"
+                    fontWeight={p.hotel.is_mine ? 700 : 500}
+                    fill="var(--text-primary)"
+                    style={{ pointerEvents: "none" }}
+                  >
+                    {fmt(p.price)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
+          {/* Scale bar */}
+          <g transform={`translate(${pad},${H - 26})`}>
+            <line x1="0" y1="0" x2={scaleBarPx} y2="0" stroke="var(--text-muted)" strokeWidth="2" />
+            <line x1="0" y1="-4" x2="0" y2="4" stroke="var(--text-muted)" strokeWidth="2" />
+            <line x1={scaleBarPx} y1="-4" x2={scaleBarPx} y2="4" stroke="var(--text-muted)" strokeWidth="2" />
+            <text x={scaleBarPx / 2} y="-8" textAnchor="middle" fontSize="10" fill="var(--text-muted)">
+              {scaleBarKm} km
+            </text>
+          </g>
+        </svg>
+
+        {hovered && (
+          <div className="card fade pointer-events-none absolute top-2 right-2 px-3 py-2 text-xs" style={{ boxShadow: "var(--shadow-lg)" }}>
+            <div className="font-semibold">{hovered.hotel.name}</div>
+            <div style={{ color: "var(--text-secondary)" }}>
+              {hovered.price != null ? fmt(hovered.price) : "no rate"}
+              {hovered.price != null && mkt != null && mkt > 0 && (
+                <>
+                  {" · "}
+                  {((hovered.price - mkt) / mkt) * 100 >= 0 ? "+" : ""}
+                  {(((hovered.price - mkt) / mkt) * 100).toFixed(0)}% vs median
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs" style={{ color: "var(--text-secondary)" }}>
+        <span>Dot colour = price vs median:</span>
+        {[
+          ["var(--div-low)", "cheaper"],
+          ["var(--baseline)", "at market"],
+          ["var(--div-high)", "pricier"],
+        ].map(([c, label]) => (
+          <span key={label} className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-3 w-3 rounded-full" style={{ background: c }} />
+            {label}
+          </span>
+        ))}
+        <span>· starred dots are your hotels · rings mark 1, 2 and 4 km</span>
+      </div>
     </div>
   );
 }
@@ -701,8 +1080,13 @@ function GridRowView({
         const pct = ((c.price - row.median) / row.median) * 100;
         lines.push(`${pct >= 0 ? "+" : ""}${pct.toFixed(0)}% vs market median`);
       }
-      for (const o of (c.offers ?? []).slice(0, 4)) {
-        lines.push(`${o.name}: ${fmt(o.total)}`);
+      const offers = c.offers ?? [];
+      if (offers.length) {
+        lines.push("—");
+        for (const o of offers) {
+          const mark = o.name === (c.source ?? "").replace(" (direct)", "") ? " ←" : "";
+          lines.push(`${o.name}  ${fmt(o.total)}${mark}`);
+        }
       }
       lines.push(`captured ${c.capturedOn}`);
     }
@@ -1094,10 +1478,12 @@ function RateLadder({
   rows,
   hotels,
   fmt,
+  rankStats,
 }: {
   rows: GridRow[];
   hotels: Hotel[];
   fmt: (n: number) => string;
+  rankStats: RankStat[];
 }) {
   const [idx, setIdx] = useState(0);
   const row = rows[Math.min(idx, rows.length - 1)];
@@ -1115,6 +1501,8 @@ function RateLadder({
   const maxPrice = Math.max(1, ...entries.map((e) => e.price ?? 0));
   const priced = entries.filter((e) => e.price != null);
   const myRank = priced.findIndex((e) => e.hotel.is_mine);
+  const statById = new Map(rankStats.map((s) => [s.hotel_id, s]));
+  const showsToday = idx === 0;
 
   return (
     <div>
@@ -1156,7 +1544,16 @@ function RateLadder({
         </span>
       </div>
 
-      <ul className="mt-4 space-y-1.5">
+      <div
+        className="mt-4 flex items-center gap-3 pb-1 text-[10px]"
+        style={{ color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}
+      >
+        <span className="th-label w-[230px]">Hotel</span>
+        <span className="th-label flex-1">Rate</span>
+        <span className="th-label w-[90px] text-right">Price</span>
+        <span className="th-label w-[124px] text-right">Move · 30-night avg</span>
+      </div>
+      <ul className="mt-2 space-y-1.5">
         {entries.map(({ hotel, price, soldOut, direct }) => (
           <li key={hotel.hotel_id} className="flex items-center gap-3">
             <span className="w-[230px] truncate text-[13px]" title={hotel.name}>
@@ -1204,6 +1601,7 @@ function RateLadder({
                 <span style={{ color: "var(--text-muted)" }}>—</span>
               )}
             </span>
+            <RankInsight stat={statById.get(hotel.hotel_id)} live={showsToday} />
           </li>
         ))}
       </ul>
