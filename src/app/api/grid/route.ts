@@ -60,9 +60,9 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
   const [linksRes, compsRes] = await Promise.all([
     supa
       .from("profile_hotels")
-      .select("hotel_id, is_mine, hotels(name, rating, review_count, latitude, longitude)")
+      .select("hotel_id, is_mine, role, hotels(name, rating, review_count, latitude, longitude)")
       .eq("profile_id", profile.id)
-      .returns<{ hotel_id: string; is_mine: boolean; hotels: HotelRow | null }[]>(),
+      .returns<{ hotel_id: string; is_mine: boolean; role: string; hotels: HotelRow | null }[]>(),
     supa
       .from("baseline_comps")
       .select("baseline_hotel_id, comp_hotel_id")
@@ -71,6 +71,7 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
   ]);
   if (linksRes.error) throw new Error(`Database query failed: ${linksRes.error.message}`);
 
+  const roleById = new Map((linksRes.data ?? []).map((l) => [l.hotel_id, l.role]));
   const allTracked: Hotel[] = (linksRes.data ?? []).map((l) => ({
     hotel_id: l.hotel_id,
     name: l.hotels?.name ?? l.hotel_id,
@@ -121,7 +122,18 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
       .map((h) => ({ ...h, is_mine: false })),
   ];
 
-  const hotelIds = hotels.map((h) => h.hotel_id);
+  // Map context: located hotels in the profile that aren't in the grid. They
+  // carry prices for the map only and never affect the median or advice.
+  const gridIds = new Set(hotels.map((h) => h.hotel_id));
+  const mapExtras: Hotel[] = allTracked.filter(
+    (h) =>
+      !gridIds.has(h.hotel_id) &&
+      roleById.get(h.hotel_id) === "map" &&
+      h.latitude != null &&
+      h.longitude != null
+  );
+
+  const hotelIds = [...gridIds, ...mapExtras.map((h) => h.hotel_id)];
   const horizonEnd = addDaysISO(today, profile.horizon_days);
   const [latestRes, histRes, myRatesRes, lastCapRes] = await Promise.all([
     supa
@@ -229,7 +241,9 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
 
   const rows: GridRow[] = dateRange(today, profile.horizon_days).map((date) => {
     const cells: Record<string, RateCell> = {};
-    for (const h of hotels) {
+    // Map-context hotels get cells too so the map can show their prices;
+    // they are excluded from the competitor stats below.
+    for (const h of [...hotels, ...mapExtras]) {
       const s = latestByKey.get(`${h.hotel_id}|${date}`);
       cells[h.hotel_id] = {
         price: s?.price ?? null,
@@ -378,6 +392,7 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
     activeBaselineId,
     rankStats,
     hotels,
+    mapHotels: mapExtras,
     rows,
     weekdayAvg,
     lastCapturedAt: lastCapRes.data?.[0]?.captured_at ?? null,

@@ -96,6 +96,7 @@ export interface GridResponse {
   activeBaselineId: string | null;
   rankStats: RankStat[];
   hotels: Hotel[];
+  mapHotels: Hotel[];
   rows: GridRow[];
   weekdayAvg: { weekday: number; avgMedian: number | null }[];
   lastCapturedAt: string | null;

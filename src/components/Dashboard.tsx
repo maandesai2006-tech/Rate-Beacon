@@ -31,6 +31,11 @@ function binOf(price: number | null, mkt: number | null): string {
   return "bin-2";
 }
 
+// A hotel key is g<loc>-d<hotel>; TripAdvisor resolves the short review URL.
+function tripAdvisorUrl(hotelId: string): string {
+  return `https://www.tripadvisor.com/Hotel_Review-${hotelId}-Reviews.html`;
+}
+
 function dateLabel(iso: string): string {
   const d = new Date(`${iso}T00:00:00Z`);
   return d.toLocaleDateString("en-US", {
@@ -48,17 +53,18 @@ interface TooltipState {
 }
 
 type Tab = "grid" | "trends" | "ladder" | "map";
-type Theme = "light" | "dark" | "system";
+type Theme = "light" | "dark" | "midnight";
 
 export default function Dashboard() {
   const [profiles, setProfiles] = useState<ProfileStub[]>([]);
   const [profileId, setProfileId] = useState<number | null>(null);
   const [baselineId, setBaselineId] = useState<string | null>(null);
-  const [theme, setTheme] = useState<Theme>("system");
+  const [theme, setTheme] = useState<Theme>("light");
   const [data, setData] = useState<GridPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("grid");
   const [refreshing, setRefreshing] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [drawerDate, setDrawerDate] = useState<string | null>(null);
@@ -73,12 +79,12 @@ export default function Dashboard() {
 
   // Theme: explicit light/dark stamp on <html>, or follow the OS.
   useEffect(() => {
-    const saved = (localStorage.getItem("rb-theme") as Theme | null) ?? "system";
-    setTheme(saved);
+    const saved = localStorage.getItem("rb-theme") as Theme | null;
+    if (saved === "light" || saved === "dark" || saved === "midnight") setTheme(saved);
   }, []);
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === "system") root.removeAttribute("data-theme");
+    if (theme === "light") root.removeAttribute("data-theme");
     else root.setAttribute("data-theme", theme);
     localStorage.setItem("rb-theme", theme);
   }, [theme]);
@@ -170,6 +176,32 @@ export default function Dashboard() {
     }
   }
 
+  // Rebuild this baseline's competitor set from data: TripAdvisor listing →
+  // geocode → nearest by distance.
+  async function discover() {
+    if (!profileId) return;
+    setDiscovering(true);
+    setRefreshMsg(null);
+    try {
+      const qs = new URLSearchParams({ profileId: String(profileId) });
+      if (baselineId) qs.set("baselineId", baselineId);
+      const res = await fetch(`/api/discover?${qs}`, { method: "POST" });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Discovery failed");
+      const r = j.results?.[0];
+      setRefreshMsg(
+        r
+          ? `Found ${r.comps} competitors and ${r.mapExtras} nearby hotels for the map. Refresh rates to price them.`
+          : "Discovery finished."
+      );
+      await load();
+    } catch (e) {
+      setRefreshMsg(`Discovery failed: ${(e as Error).message}`);
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
   async function saveMyRate(date: string) {
     const raw = editValue.trim();
     setEditingDate(null);
@@ -209,8 +241,7 @@ export default function Dashboard() {
   if (error) {
     return (
       <Shell>
-        <div className="card card--frame mt-10 p-6" style={{ borderColor: "var(--status-critical)" }}>
-          <Corners tone="var(--status-critical)" />
+        <div className="card mt-10 p-6" style={{ borderColor: "var(--status-critical)" }}>
           <h2 className="text-[15px]" style={{ color: "var(--status-critical)" }}>
             Something went wrong
           </h2>
@@ -235,8 +266,7 @@ export default function Dashboard() {
   if (!data.configured) {
     return (
       <Shell>
-        <div className="card card--frame mt-10 p-8 text-center">
-          <Corners />
+        <div className="card mt-10 p-8 text-center">
           <h2 className="text-lg">Welcome to Rate Beacon</h2>
           <p className="mx-auto mt-2 max-w-md text-sm" style={{ color: "var(--text-secondary)" }}>
             Create a hotel profile: pick the baseline hotel and the competitor
@@ -250,7 +280,7 @@ export default function Dashboard() {
     );
   }
 
-  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats } = data;
+  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats, mapHotels } = data;
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
@@ -319,15 +349,20 @@ export default function Dashboard() {
           <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-[13px]">
             Edit profile
           </Link>
-          <Link href="/setup?new=1" className="btn-ghost px-3 py-1.5 text-[13px]">
-            + New profile
-          </Link>
+          <button
+            onClick={discover}
+            disabled={discovering || refreshing}
+            className="btn-ghost px-3 py-1.5 text-[13px]"
+            title="Rebuild this hotel's competitor set from TripAdvisor listings and distance"
+          >
+            {discovering ? "Searching…" : "Find competitors"}
+          </button>
           <button
             onClick={refresh}
-            disabled={refreshing}
+            disabled={refreshing || discovering}
             className="btn-accent px-4 py-1.5 text-[13px]"
           >
-            {refreshing ? "Fetching… (takes a few minutes)" : "Refresh rates"}
+            {refreshing ? "Fetching rates…" : "Refresh rates"}
           </button>
         </div>
       }
@@ -372,8 +407,7 @@ export default function Dashboard() {
       )}
 
       {!hasAnyData && (
-        <div className="card card--frame mt-6 p-5 text-sm">
-          <Corners />
+        <div className="card mt-6 p-5 text-sm">
           <div className="kicker mb-1.5">No rates yet</div>
           Hit <b>Refresh rates</b> to fetch live prices for the next{" "}
           {profile.horizon_days} days. A daily job keeps it fresh afterwards.
@@ -406,8 +440,7 @@ export default function Dashboard() {
           value={stats.avg30 != null ? fmt(stats.avg30) : "—"}
           label="avg market rate, next 30 nights"
         />
-        <div className="card card--frame card--lift px-4 py-3.5">
-          <Corners />
+        <div className="card card--lift px-4 py-3.5">
           <div className="flex h-10 items-end gap-1" aria-label="Typical market rate by weekday">
             {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
               const v = weekdayAvg.find((w) => w.weekday === wd)?.avgMedian ?? null;
@@ -470,7 +503,15 @@ export default function Dashboard() {
                       style={{ borderBottom: "1px solid var(--border)" }}
                       title={h.rating != null ? `${h.name} · ${h.rating.toFixed(1)} (${h.review_count ?? "–"})` : h.name}
                     >
-                      {h.name}
+                      <a
+                        href={tripAdvisorUrl(h.hotel_id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:underline"
+                        style={{ color: "inherit" }}
+                      >
+                        {h.name}
+                      </a>
                     </th>
                   ))}
                   <th className="th-label px-3 py-2.5 text-right" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -540,23 +581,20 @@ export default function Dashboard() {
       )}
 
       {tab === "trends" && (
-        <div className="card card--frame rise mt-4 p-5">
-          <Corners />
+        <div className="card rise mt-4 p-5">
           <TrendChart rows={rows} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
         </div>
       )}
 
       {tab === "ladder" && (
-        <div className="card card--frame rise mt-4 p-5">
-          <Corners />
+        <div className="card rise mt-4 p-5">
           <RateLadder rows={rows} hotels={hotels} fmt={fmt} rankStats={rankStats} />
         </div>
       )}
 
       {tab === "map" && (
-        <div className="card card--frame rise mt-4 p-5">
-          <Corners />
-          <MapView rows={rows} hotels={hotels} fmt={fmt} />
+        <div className="card rise mt-4 p-5">
+          <MapView rows={rows} hotels={[...hotels, ...(mapHotels ?? [])]} fmt={fmt} />
         </div>
       )}
 
@@ -705,45 +743,53 @@ function ThemeToggle({
   theme: Theme;
   onChange: (t: Theme) => void;
 }) {
-  const opts: [Theme, string, string][] = [
-    ["light", "Light", "M12 4v1.5M12 18.5V20M4 12h1.5M18.5 12H20M6.3 6.3l1.1 1.1M16.6 16.6l1.1 1.1M17.7 6.3l-1.1 1.1M7.4 16.6l-1.1 1.1"],
-    ["dark", "Dark", "M20 13.5A8 8 0 1 1 10.5 4a6.5 6.5 0 0 0 9.5 9.5z"],
-    ["system", "System", "M4 5h16v10H4zM9 19h6"],
-  ];
+  const dark = theme !== "light";
   return (
     <div
-      className="inline-flex overflow-hidden"
+      className="inline-flex items-stretch overflow-hidden"
       style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface)" }}
-      role="group"
-      aria-label="Colour theme"
     >
-      {opts.map(([value, label, path]) => (
-        <button
-          key={value}
-          onClick={() => onChange(value)}
-          title={label}
-          aria-label={label}
-          aria-pressed={theme === value}
-          className="px-2.5 py-1.5"
-          style={{
-            background: theme === value ? "var(--accent)" : "transparent",
-            color: theme === value ? "var(--accent-ink)" : "var(--text-secondary)",
-            transition: "background .18s var(--ease), color .18s var(--ease)",
-          }}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-            {value === "light" && <circle cx="12" cy="12" r="4" />}
-            <path d={path} />
-          </svg>
-        </button>
-      ))}
+      <button
+        onClick={() => onChange("light")}
+        aria-pressed={theme === "light"}
+        title="Light"
+        className="px-2.5"
+        style={{
+          background: theme === "light" ? "var(--accent)" : "transparent",
+          color: theme === "light" ? "var(--accent-ink)" : "var(--text-secondary)",
+          transition: "background .18s var(--ease), color .18s var(--ease)",
+        }}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 4v1.5M12 18.5V20M4 12h1.5M18.5 12H20M6.3 6.3l1.1 1.1M16.6 16.6l1.1 1.1M17.7 6.3l-1.1 1.1M7.4 16.6l-1.1 1.1" />
+        </svg>
+      </button>
+      <select
+        value={dark ? theme : "dark"}
+        onChange={(e) => onChange(e.target.value as Theme)}
+        aria-label="Dark theme variant"
+        title="Dark themes"
+        className="px-2 text-[12px]"
+        style={{
+          background: dark ? "var(--accent)" : "transparent",
+          color: dark ? "var(--accent-ink)" : "var(--text-secondary)",
+          border: 0,
+          borderLeft: "1px solid var(--border)",
+          cursor: "pointer",
+          transition: "background .18s var(--ease), color .18s var(--ease)",
+        }}
+      >
+        <option value="dark">Dark</option>
+        <option value="midnight">Midnight</option>
+      </select>
     </div>
   );
 }
 
-// Spatial rate view: hotels plotted on an equirectangular projection of the
-// market, coloured by price against tonight's median. Not a street map — the
-// point is to read price by area at a glance.
+// Spatial rate view. Every hotel the pipeline has located is plotted —
+// tracked competitors and nearby context alike — coloured by price against
+// the night's market median. Names link straight to TripAdvisor.
 function MapView({
   rows,
   hotels,
@@ -756,53 +802,55 @@ function MapView({
   const [idx, setIdx] = useState(0);
   const [hover, setHover] = useState<string | null>(null);
   const row = rows[Math.min(idx, rows.length - 1)];
+  const located = hotels.filter((h) => h.latitude != null && h.longitude != null);
 
-  const located = hotels.filter(
-    (h) => h.latitude != null && h.longitude != null
-  );
   if (!row) return null;
   if (located.length < 2) {
     return (
       <div>
         <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          Hotel coordinates are still being looked up.
+          {located.length === 1
+            ? "One hotel located so far — the map needs at least two."
+            : "No hotel coordinates yet."}
         </p>
-        <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-          The daily job geocodes a few hotels per run (OpenStreetMap asks for a
-          slow crawl), so the map fills in over the next couple of refreshes.
-          {located.length === 1 ? " 1 hotel located so far." : " None located yet."}
+        <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+          Coordinates come from the discovery pipeline (TripAdvisor listing →
+          OpenStreetMap geocode → distance ranking). Run{" "}
+          <code>Find competitors</code> in the header, or{" "}
+          <code>node scripts/discover.mjs 1</code> locally, then refresh rates.
         </p>
       </div>
     );
   }
 
-  const W = 920;
-  const H = 460;
-  const pad = 54;
+  const W = 940;
+  const H = 520;
+  const pad = 60;
   const lats = located.map((h) => h.latitude as number);
   const lons = located.map((h) => h.longitude as number);
   const minLat = Math.min(...lats);
   const maxLat = Math.max(...lats);
   const minLon = Math.min(...lons);
   const maxLon = Math.max(...lons);
-  // Keep the aspect ratio honest: a degree of longitude shrinks with latitude.
   const midLat = (minLat + maxLat) / 2;
+  // A degree of longitude narrows with latitude, so correct it or the map
+  // stretches east-west.
   const lonScale = Math.cos((midLat * Math.PI) / 180);
   const spanLat = Math.max(maxLat - minLat, 0.004);
   const spanLon = Math.max((maxLon - minLon) * lonScale, 0.004);
   const scale = Math.min((W - 2 * pad) / spanLon, (H - 2 * pad) / spanLat);
-  const cx = (lon: number) =>
-    W / 2 + ((lon - (minLon + maxLon) / 2) * lonScale) * scale;
+  const cx = (lon: number) => W / 2 + (lon - (minLon + maxLon) / 2) * lonScale * scale;
   const cy = (lat: number) => H / 2 - (lat - midLat) * scale;
 
   const mkt = row.median;
   function tone(price: number | null): string {
-    if (price == null || mkt == null || mkt === 0) return "var(--text-muted)";
+    if (price == null) return "var(--baseline)";
+    if (mkt == null || mkt === 0) return "var(--series-1)";
     const pct = ((price - mkt) / mkt) * 100;
     if (pct <= -15) return "var(--div-low)";
-    if (pct <= -5) return "color-mix(in oklab, var(--div-low) 60%, var(--surface))";
+    if (pct <= -5) return "color-mix(in oklab, var(--div-low) 62%, var(--surface))";
     if (pct < 5) return "var(--baseline)";
-    if (pct < 15) return "color-mix(in oklab, var(--div-high) 60%, var(--surface))";
+    if (pct < 15) return "color-mix(in oklab, var(--div-high) 62%, var(--surface))";
     return "var(--div-high)";
   }
 
@@ -810,14 +858,18 @@ function MapView({
     .map((h) => {
       const c = row.cells[h.hotel_id];
       const price = h.is_mine ? row.myPrice ?? c?.price ?? null : c?.price ?? null;
-      return { hotel: h, price, x: cx(h.longitude as number), y: cy(h.latitude as number) };
+      return {
+        hotel: h,
+        price,
+        x: cx(h.longitude as number),
+        y: cy(h.latitude as number),
+      };
     })
-    .sort((a, b) => (a.price ?? 0) - (b.price ?? 0));
+    .sort((a, b) => Number(a.hotel.is_mine) - Number(b.hotel.is_mine));
 
   const hovered = points.find((p) => p.hotel.hotel_id === hover) ?? null;
-  const scaleBarKm = 2;
-  const kmInDeg = scaleBarKm / 111;
-  const scaleBarPx = kmInDeg * scale;
+  const kmPx = scale / 111;
+  const priced = points.filter((p) => p.price != null).length;
 
   return (
     <div>
@@ -850,26 +902,25 @@ function MapView({
           →
         </button>
         <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
-          {row.median != null && <>market median {fmt(row.median)} · </>}
-          {located.length} of {hotels.length} hotels located
+          {row.median != null && <>median {fmt(row.median)} · </>}
+          {priced} of {located.length} hotels priced
         </span>
       </div>
 
       <div className="relative mt-3 overflow-x-auto">
         <svg
           viewBox={`0 0 ${W} ${H}`}
-          className="w-full min-w-[620px]"
+          className="w-full min-w-[640px]"
           role="img"
           aria-label="Hotels plotted by location, coloured by price against the market median"
         >
           <defs>
-            <pattern id="rb-grid" width="46" height="46" patternUnits="userSpaceOnUse">
-              <path d="M46 0H0V46" fill="none" stroke="var(--gridline)" strokeWidth="1" />
+            <pattern id="rb-grid" width="48" height="48" patternUnits="userSpaceOnUse">
+              <path d="M48 0H0V48" fill="none" stroke="var(--gridline)" strokeWidth="1" />
             </pattern>
           </defs>
-          <rect x="0" y="0" width={W} height={H} fill="url(#rb-grid)" opacity="0.7" />
+          <rect x="0" y="0" width={W} height={H} fill="url(#rb-grid)" />
 
-          {/* Distance rings around each of my hotels */}
           {points
             .filter((p) => p.hotel.is_mine)
             .map((p) =>
@@ -878,17 +929,18 @@ function MapView({
                   key={`${p.hotel.hotel_id}-${km}`}
                   cx={p.x}
                   cy={p.y}
-                  r={(km / 111) * scale}
+                  r={km * kmPx}
                   fill="none"
                   stroke="var(--accent)"
-                  strokeOpacity={0.16}
-                  strokeDasharray="4 5"
+                  strokeOpacity={0.18}
+                  strokeDasharray="4 6"
                 />
               ))
             )}
 
           {points.map((p) => {
-            const r = p.hotel.is_mine ? 11 : 8;
+            const mine = p.hotel.is_mine;
+            const r = mine ? 10 : 7;
             const isHover = hover === p.hotel.hotel_id;
             return (
               <g
@@ -900,15 +952,15 @@ function MapView({
                 <circle
                   cx={p.x}
                   cy={p.y}
-                  r={r + (isHover ? 4 : 0)}
+                  r={r + (isHover ? 3 : 0)}
                   fill={tone(p.price)}
                   stroke="var(--surface)"
-                  strokeWidth="2.5"
-                  style={{ transition: "r .18s var(--ease)" }}
+                  strokeWidth="2"
+                  style={{ transition: "r .16s var(--ease)" }}
                 />
-                {p.hotel.is_mine && (
+                {mine && (
                   <path
-                    d="M0,-5.5 L1.5,-1.7 L5.6,-1.7 L2.3,0.7 L3.5,4.6 L0,2.2 L-3.5,4.6 L-2.3,0.7 L-5.6,-1.7 L-1.5,-1.7 Z"
+                    d="M0,-5 L1.4,-1.5 L5.1,-1.5 L2.1,0.7 L3.2,4.2 L0,2 L-3.2,4.2 L-2.1,0.7 L-5.1,-1.5 L-1.4,-1.5 Z"
                     transform={`translate(${p.x},${p.y})`}
                     fill="var(--accent-ink)"
                   />
@@ -916,10 +968,10 @@ function MapView({
                 {p.price != null && (
                   <text
                     x={p.x}
-                    y={p.y - r - 7}
+                    y={p.y - r - 6}
                     textAnchor="middle"
                     fontSize="11"
-                    fontWeight={p.hotel.is_mine ? 700 : 500}
+                    fontWeight={mine ? 700 : 500}
                     fill="var(--text-primary)"
                     style={{ pointerEvents: "none" }}
                   >
@@ -930,22 +982,32 @@ function MapView({
             );
           })}
 
-          {/* Scale bar */}
-          <g transform={`translate(${pad},${H - 26})`}>
-            <line x1="0" y1="0" x2={scaleBarPx} y2="0" stroke="var(--text-muted)" strokeWidth="2" />
+          <g transform={`translate(${pad},${H - 24})`}>
+            <line x1="0" y1="0" x2={2 * kmPx} y2="0" stroke="var(--text-muted)" strokeWidth="2" />
             <line x1="0" y1="-4" x2="0" y2="4" stroke="var(--text-muted)" strokeWidth="2" />
-            <line x1={scaleBarPx} y1="-4" x2={scaleBarPx} y2="4" stroke="var(--text-muted)" strokeWidth="2" />
-            <text x={scaleBarPx / 2} y="-8" textAnchor="middle" fontSize="10" fill="var(--text-muted)">
-              {scaleBarKm} km
+            <line x1={2 * kmPx} y1="-4" x2={2 * kmPx} y2="4" stroke="var(--text-muted)" strokeWidth="2" />
+            <text x={kmPx} y="-8" textAnchor="middle" fontSize="10" fill="var(--text-muted)">
+              2 km
             </text>
           </g>
         </svg>
 
         {hovered && (
-          <div className="card fade pointer-events-none absolute top-2 right-2 px-3 py-2 text-xs" style={{ boxShadow: "var(--shadow-lg)" }}>
-            <div className="font-semibold">{hovered.hotel.name}</div>
-            <div style={{ color: "var(--text-secondary)" }}>
-              {hovered.price != null ? fmt(hovered.price) : "no rate"}
+          <div
+            className="card fade absolute top-2 right-2 max-w-[260px] px-3 py-2 text-xs"
+            style={{ boxShadow: "var(--shadow-lg)" }}
+          >
+            <a
+              href={tripAdvisorUrl(hovered.hotel.hotel_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold hover:underline"
+              style={{ color: "var(--accent)" }}
+            >
+              {hovered.hotel.name} ↗
+            </a>
+            <div className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
+              {hovered.price != null ? fmt(hovered.price) : "no rate captured"}
               {hovered.price != null && mkt != null && mkt > 0 && (
                 <>
                   {" · "}
@@ -972,20 +1034,33 @@ function MapView({
         ))}
         <span>· starred dots are your hotels · rings mark 1, 2 and 4 km</span>
       </div>
-    </div>
-  );
-}
 
-// Blueprint registration marks for framed cards.
-function Corners({ tone }: { tone?: string }) {
-  const style = tone ? { color: tone } : undefined;
-  return (
-    <>
-      <i className="corner tl" style={style} aria-hidden />
-      <i className="corner tr" style={style} aria-hidden />
-      <i className="corner bl" style={style} aria-hidden />
-      <i className="corner br" style={style} aria-hidden />
-    </>
+      <div className="mt-4 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
+        {points
+          .slice()
+          .sort((a, b) => (b.price ?? -1) - (a.price ?? -1))
+          .map((p) => (
+            <div key={p.hotel.hotel_id} className="flex items-baseline justify-between gap-2 py-0.5">
+              <a
+                href={tripAdvisorUrl(p.hotel.hotel_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="truncate hover:underline"
+                style={{
+                  color: p.hotel.is_mine ? "var(--accent)" : "var(--text-secondary)",
+                  fontWeight: p.hotel.is_mine ? 700 : 400,
+                }}
+                title={p.hotel.name}
+              >
+                {p.hotel.name}
+              </a>
+              <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
+                {p.price != null ? fmt(p.price) : "—"}
+              </span>
+            </div>
+          ))}
+      </div>
+    </div>
   );
 }
 
@@ -1007,8 +1082,7 @@ function Mark() {
 
 function StatTile({ value, label, tone }: { value: string; label: string; tone?: string }) {
   return (
-    <div className="card card--frame card--lift px-4 py-3.5">
-      <Corners />
+    <div className="card card--lift px-4 py-3.5">
       <div
         className="tabular-nums"
         style={{
@@ -1456,8 +1530,7 @@ function TrendChart({
           )}
         </svg>
         {hoverRow && (
-          <div className="card card--frame pointer-events-none absolute top-2 right-2 px-3 py-2 text-xs" style={{ background: "var(--surface)" }}>
-            <Corners />
+          <div className="card pointer-events-none absolute top-2 right-2 px-3 py-2 text-xs" style={{ background: "var(--surface)" }}>
             <div className="font-semibold">{dateLabel(hoverRow.date)}</div>
             <div style={{ color: "var(--text-secondary)" }}>
               {hoverRow.myPrice != null && <>You: {fmt(hoverRow.myPrice)} · </>}
@@ -1557,14 +1630,18 @@ function RateLadder({
         {entries.map(({ hotel, price, soldOut, direct }) => (
           <li key={hotel.hotel_id} className="flex items-center gap-3">
             <span className="w-[230px] truncate text-[13px]" title={hotel.name}>
-              <span
+              <a
+                href={tripAdvisorUrl(hotel.hotel_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:underline"
                 style={{
                   fontWeight: hotel.is_mine ? 700 : 400,
-                  color: hotel.is_mine ? "var(--accent)" : undefined,
+                  color: hotel.is_mine ? "var(--accent)" : "inherit",
                 }}
               >
                 {hotel.name}
-              </span>
+              </a>
               {hotel.rating != null && (
                 <span className="ml-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
                   {hotel.rating.toFixed(1)}
@@ -1693,7 +1770,15 @@ function HistoryDrawer({
                 >
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="truncate text-[13px] font-semibold">
-                      {h.name}
+                      <a
+                        href={tripAdvisorUrl(h.hotel_id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:underline"
+                        style={{ color: "inherit" }}
+                      >
+                        {h.name}
+                      </a>
                       {h.is_mine && (
                         <span className="ml-1.5 text-xs" style={{ color: "var(--accent)" }}>
                           (you)

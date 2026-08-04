@@ -32,8 +32,8 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
       supa.from("profiles").select("*").returns<Profile[]>(),
       supa
         .from("profile_hotels")
-        .select("profile_id, hotel_id")
-        .returns<{ profile_id: number; hotel_id: string }[]>(),
+        .select("profile_id, hotel_id, role")
+        .returns<{ profile_id: number; hotel_id: string; role: string }[]>(),
       supa
         .from("hotels")
         .select("hotel_id, name")
@@ -49,16 +49,19 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
   for (const link of links) {
     const p = profileById.get(link.profile_id);
     if (!p) continue;
+    // Map-only context hotels exist to give the map prices; a week is
+    // plenty and keeps the daily request count sane.
+    const horizon = link.role === "map" ? Math.min(7, p.horizon_days) : p.horizon_days;
     const existing = tracked.get(link.hotel_id);
     if (existing) {
-      existing.horizon = Math.max(existing.horizon, p.horizon_days);
+      existing.horizon = Math.max(existing.horizon, horizon);
     } else {
       tracked.set(link.hotel_id, {
         hotel_id: link.hotel_id,
         name: nameById.get(link.hotel_id) ?? link.hotel_id,
         currency: p.currency,
         adults: p.adults,
-        horizon: p.horizon_days,
+        horizon,
       });
     }
   }

@@ -3,18 +3,6 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-// Blueprint registration marks for framed cards.
-function Corners() {
-  return (
-    <>
-      <i className="corner tl" aria-hidden />
-      <i className="corner tr" aria-hidden />
-      <i className="corner bl" aria-hidden />
-      <i className="corner br" aria-hidden />
-    </>
-  );
-}
-
 interface FoundHotel {
   hotelKey: string;
   name: string;
@@ -187,8 +175,7 @@ export default function SetupPage() {
       </p>
 
       {/* Step 1: paste link */}
-      <section className="card card--frame mt-8 p-5">
-        <Corners />
+      <section className="card mt-8 p-5">
         <div className="kicker">1 · Baseline hotel</div>
         <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
           Find the hotel on tripadvisor.com and paste the page link — e.g.
@@ -218,8 +205,7 @@ export default function SetupPage() {
       </section>
 
       {/* Step 2: tracked hotels */}
-      <section className="card card--frame mt-5 p-5">
-        <Corners />
+      <section className="card mt-5 p-5">
         <div className="kicker">2 · Hotels to track</div>
 
         {picked.length > 0 && (
@@ -332,8 +318,7 @@ export default function SetupPage() {
       </section>
 
       {/* Step 3: options */}
-      <section className="card card--frame mt-5 p-5">
-        <Corners />
+      <section className="card mt-5 p-5">
         <div className="kicker">3 · Options</div>
         <div className="mt-2 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <label className="text-sm">

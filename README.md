@@ -81,6 +81,31 @@ npm install
 npm run dev                  # http://localhost:3000
 ```
 
+## Competitor discovery (no hand-curated lists)
+
+Every competitor set is derived from public data by the same pipeline, so it
+works for any hotel anywhere — nothing is hand-authored:
+
+1. **List** every hotel TripAdvisor knows in the hotel's location (Xotelo `/list`).
+2. **Geocode** the ones not yet placed (OpenStreetMap Nominatim, ~1 req/s).
+3. **Rank** by great-circle distance from the hotel and keep the nearest N as
+   competitors; a few hotels around each competitor become map-only context.
+4. **Store** the edges with their distance, so the dashboard can show why a
+   hotel is in the set.
+
+Run it from the dashboard (**Find competitors**), from the API
+(`POST /api/discover?profileId=1[&baselineId=g..-d..]`), or standalone:
+
+```bash
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  node scripts/discover.mjs 1            # all baselines in profile 1
+  node scripts/discover.mjs 1 g34550-d10637341 15 3   # one hotel, 15 comps, 3 extras each
+```
+
+Adding a new hotel and running discovery gives that hotel *its own* nearest
+competitors rather than inheriting another hotel's set. Map-context hotels are
+priced over a short 7-night window so the extra coverage stays cheap.
+
 ## Notes & limits
 
 - **Request volume**: one Xotelo lookup per hotel per night — a daily snapshot
