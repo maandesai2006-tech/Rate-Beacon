@@ -52,7 +52,7 @@ interface TooltipState {
   lines: string[];
 }
 
-type Tab = "grid" | "trends" | "ladder" | "map";
+type Tab = "grid" | "trends" | "ladder" | "map" | "ratings";
 type Theme = "light" | "dark";
 
 export default function Dashboard() {
@@ -150,31 +150,82 @@ export default function Dashboard() {
     load();
   }, [load]);
 
+  // Place any hotels that still lack coordinates so the map has points.
+  const fillMap = useCallback(async () => {
+    for (let guard = 0; guard < 12; guard++) {
+      const res = await fetch("/api/geocode?limit=20", { method: "POST" });
+      if (!res.ok) return;
+      const j = (await res.json()) as { remaining?: number; located?: number };
+      if (!j.remaining) break;
+    }
+    await load();
+  }, [load]);
+
+  // If the map has no coordinates yet, place them in the background so the
+  // map is populated the next time it is opened — no manual step.
+  const mapFillStarted = useRef(false);
+  useEffect(() => {
+    if (mapFillStarted.current || !data || !data.configured) return;
+    const anyLocated = [...data.hotels, ...(data.mapHotels ?? [])].some(
+      (h) => h.latitude != null
+    );
+    if (anyLocated) return;
+    mapFillStarted.current = true;
+    fillMap().catch(() => {});
+  }, [data, fillMap]);
+
+
+
+  // The server can only work for ~60s at a time, so the refresh is driven
+  // from here in chunks until the run reports it is finished.
   async function refresh() {
     setRefreshing(true);
-    setRefreshMsg(null);
+    setRefreshMsg("Fetching rates…");
+    let offset = 0;
+    let written = 0;
+    const problems: string[] = [];
     try {
-      const res = await fetch("/api/refresh", { method: "POST" });
-      const text = await res.text();
-      let j: { rowsWritten?: number; errors?: string[]; error?: string };
-      try {
-        j = JSON.parse(text);
-      } catch {
-        throw new Error(`server returned ${res.status} — try again, or check the Vercel function logs`);
+      for (let guard = 0; guard < 60; guard++) {
+        const res = await fetch(`/api/refresh?offset=${offset}`, { method: "POST" });
+        const text = await res.text();
+        let j: {
+          rowsWritten?: number;
+          errors?: string[];
+          error?: string;
+          total?: number;
+          nextOffset?: number | null;
+        };
+        try {
+          j = JSON.parse(text);
+        } catch {
+          throw new Error(`server returned ${res.status}`);
+        }
+        if (!res.ok) throw new Error(j.error ?? "Refresh failed");
+        written += j.rowsWritten ?? 0;
+        if (j.errors?.length) problems.push(...j.errors);
+        const total = j.total ?? 0;
+        if (j.nextOffset == null) {
+          setRefreshMsg(
+            problems.length
+              ? `Fetched ${written} rates with ${problems.length} error(s): ${problems[0]}`
+              : `Fetched ${written} rates.`
+          );
+          break;
+        }
+        offset = j.nextOffset;
+        setRefreshMsg(
+          `Fetching rates… ${Math.min(offset, total)} of ${total} (${written} stored)`
+        );
       }
-      if (!res.ok) throw new Error(j.error ?? "Refresh failed");
-      setRefreshMsg(
-        j.errors?.length
-          ? `Fetched with ${j.errors.length} error(s): ${j.errors[0]}`
-          : `Fetched ${j.rowsWritten} rates.`
-      );
       await load();
+      await fillMap();
     } catch (e) {
       setRefreshMsg(`Refresh failed: ${(e as Error).message}`);
     } finally {
       setRefreshing(false);
     }
   }
+
 
   // Rebuild this baseline's competitor set from data: TripAdvisor listing →
   // geocode → nearest by distance.
@@ -346,6 +397,15 @@ export default function Dashboard() {
             </p>
           </div>
           <ThemeToggle theme={theme} onChange={setTheme} />
+          <button
+            onClick={async () => {
+              await fetch("/api/auth/logout", { method: "POST" });
+              window.location.href = "/login";
+            }}
+            className="btn-ghost px-3 py-1.5 text-[13px]"
+          >
+            Sign out
+          </button>
           <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-[13px]">
             Edit profile
           </Link>
@@ -601,6 +661,12 @@ export default function Dashboard() {
         </div>
       )}
 
+      {tab === "ratings" && (
+        <div className="card rise mt-4 p-5">
+          <RatingsTable hotels={hotels} rows={rows} fmt={fmt} />
+        </div>
+      )}
+
       {tab === "map" && (
         <div className="card rise mt-4 p-5">
           <MapView rows={rows} hotels={[...hotels, ...(mapHotels ?? [])]} fmt={fmt} />
@@ -610,10 +676,12 @@ export default function Dashboard() {
       {/* Tooltip layer */}
       {tooltip && (
         <div
-          className="card fade pointer-events-none fixed z-50 max-w-[280px] px-3 py-2.5 text-xs"
+          className="card fade pointer-events-none max-w-[300px] px-3 py-2.5 text-xs"
           style={{
-            left: Math.min(tooltip.x + 14, typeof window !== "undefined" ? window.innerWidth - 300 : tooltip.x),
-            top: tooltip.y + 14,
+            position: "fixed",
+            zIndex: 60,
+            left: Math.min(tooltip.x + 14, typeof window !== "undefined" ? window.innerWidth - 320 : tooltip.x),
+            top: Math.min(tooltip.y + 14, typeof window !== "undefined" ? window.innerHeight - 260 : tooltip.y),
             boxShadow: "var(--shadow-lg)",
           }}
         >
@@ -659,6 +727,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
     ["trends", "Trends"],
     ["ladder", "Rate ladder"],
     ["map", "Map"],
+    ["ratings", "Ratings"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
   const [ind, setInd] = useState({ left: 0, width: 0 });
@@ -742,6 +811,166 @@ function RankInsight({ stat, live }: { stat?: RankStat; live: boolean }) {
         {avgRank30 != null ? `#${avgRank30.toFixed(1)}` : "—"}
       </span>
     </span>
+  );
+}
+
+// Review standing across the compset. TripAdvisor is the only source in the
+// free feed, so that is what is shown — rating, review volume and rank —
+// alongside price position, which is where the two often disagree.
+function RatingsTable({
+  hotels,
+  rows,
+  fmt,
+}: {
+  hotels: Hotel[];
+  rows: GridRow[];
+  fmt: (n: number) => string;
+}) {
+  const rated = hotels.filter((h) => h.rating != null);
+  // Average price over the horizon, for the value comparison.
+  const avgPrice = new Map<string, number>();
+  for (const h of hotels) {
+    const vals = rows
+      .map((r) => (h.is_mine ? r.myPrice ?? r.cells[h.hotel_id]?.price : r.cells[h.hotel_id]?.price))
+      .filter((v): v is number => v != null);
+    if (vals.length) avgPrice.set(h.hotel_id, vals.reduce((a, b) => a + b, 0) / vals.length);
+  }
+
+  if (rated.length === 0) {
+    return (
+      <div>
+        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+          No review scores collected yet.
+        </p>
+        <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+          Ratings come from TripAdvisor via the same feed as the rates, and are
+          refreshed weekly by the daily job. They appear after the next
+          successful refresh.
+        </p>
+      </div>
+    );
+  }
+
+  const byRating = [...rated].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  const byPrice = [...hotels]
+    .filter((h) => avgPrice.has(h.hotel_id))
+    .sort((a, b) => (avgPrice.get(b.hotel_id) ?? 0) - (avgPrice.get(a.hotel_id) ?? 0));
+  const priceRank = new Map(byPrice.map((h, i) => [h.hotel_id, i + 1]));
+  const maxReviews = Math.max(1, ...rated.map((h) => h.review_count ?? 0));
+
+  return (
+    <div>
+      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+        TripAdvisor rating and review volume across the competitive set, next to
+        each hotel&apos;s price position. A hotel rated above the set but priced
+        below it is leaving room; the reverse is a risk.
+      </p>
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full min-w-[640px] border-collapse text-[13px]">
+          <thead>
+            <tr className="text-left">
+              {["#", "Hotel", "Rating", "Reviews", "Avg rate", "Price rank"].map((h, i) => (
+                <th
+                  key={h}
+                  className={`th-label px-3 py-2.5 ${i >= 2 ? "text-right" : ""}`}
+                  style={{ borderBottom: "1px solid var(--border)" }}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {byRating.map((h, i) => {
+              const pRank = priceRank.get(h.hotel_id) ?? null;
+              const rRank = i + 1;
+              // Rated better than priced → room to move up.
+              const gap = pRank != null ? pRank - rRank : null;
+              return (
+                <tr
+                  key={h.hotel_id}
+                  className="row-hover border-t"
+                  style={{ borderColor: "var(--gridline)" }}
+                >
+                  <td className="px-3 py-2 tabular-nums" style={{ color: "var(--text-muted)" }}>
+                    {rRank}
+                  </td>
+                  <td className="max-w-[280px] truncate px-3 py-2">
+                    <a
+                      href={tripAdvisorUrl(h.hotel_id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:underline"
+                      style={{
+                        color: h.is_mine ? "var(--accent)" : "inherit",
+                        fontWeight: h.is_mine ? 700 : 400,
+                      }}
+                    >
+                      {h.name}
+                    </a>
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                    {h.rating?.toFixed(1)}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    <span className="inline-flex items-center justify-end gap-2">
+                      <span
+                        className="inline-block h-1.5"
+                        style={{
+                          width: `${Math.max(4, ((h.review_count ?? 0) / maxReviews) * 56)}px`,
+                          background: "var(--series-1)",
+                        }}
+                      />
+                      <span style={{ color: "var(--text-secondary)" }}>
+                        {h.review_count ?? "—"}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {avgPrice.has(h.hotel_id) ? fmt(avgPrice.get(h.hotel_id) as number) : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {pRank != null ? (
+                      <span
+                        title={
+                          gap === null || gap === 0
+                            ? "Priced in line with its review standing"
+                            : gap > 0
+                            ? `Rated ${gap} place(s) better than it is priced`
+                            : `Priced ${Math.abs(gap)} place(s) above its review standing`
+                        }
+                        style={{
+                          color:
+                            gap == null || gap === 0
+                              ? "var(--text-secondary)"
+                              : gap > 0
+                              ? "var(--delta-good-text)"
+                              : "var(--status-critical)",
+                        }}
+                      >
+                        #{pRank}
+                        {gap != null && gap !== 0 && (
+                          <span className="ml-1 text-[11px]">
+                            ({gap > 0 ? "+" : ""}
+                            {gap})
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span style={{ color: "var(--text-muted)" }}>—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-3 text-xs" style={{ color: "var(--text-muted)" }}>
+        Ratings are TripAdvisor&apos;s. Expedia and Booking.com scores are not
+        available in the free feed this dashboard runs on.
+      </p>
+    </div>
   );
 }
 
@@ -995,8 +1224,8 @@ function MapView({
 
         {hovered && (
           <div
-            className="card fade absolute top-2 right-2 max-w-[260px] px-3 py-2 text-xs"
-            style={{ boxShadow: "var(--shadow-lg)" }}
+            className="card fade max-w-[260px] px-3 py-2 text-xs"
+            style={{ position: "absolute", top: 8, right: 8, zIndex: 5, boxShadow: "var(--shadow-lg)" }}
           >
             <a
               href={tripAdvisorUrl(hovered.hotel.hotel_id)}

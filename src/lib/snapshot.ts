@@ -10,6 +10,10 @@ export interface SnapshotResult {
   dates: number;
   rowsWritten: number;
   errors: string[];
+  /** Jobs in the whole run, so a caller can show progress. */
+  total: number;
+  /** Where the next chunk should start; null when the run is complete. */
+  nextOffset: number | null;
 }
 
 interface TrackedHotel {
@@ -24,7 +28,10 @@ interface TrackedHotel {
 // today's snapshot. A hotel shared by several profiles is fetched once, using
 // the widest horizon among them. One Xotelo request per hotel per night, so a
 // small worker pool; `maxDates` keeps a run inside serverless time limits.
-export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
+export async function runSnapshot(
+  maxDates?: number,
+  chunk?: { offset: number; limit: number }
+): Promise<SnapshotResult> {
   const supa = db();
 
   const [{ data: profiles }, { data: links }, { data: hotelRows }] =
@@ -40,7 +47,10 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
         .returns<{ hotel_id: string; name: string }[]>(),
     ]);
   if (!profiles?.length || !links?.length) {
-    return { profiles: 0, hotels: 0, dates: 0, rowsWritten: 0, errors: ["No profiles configured yet"] };
+    return {
+      profiles: 0, hotels: 0, dates: 0, rowsWritten: 0,
+      errors: ["No profiles configured yet"], total: 0, nextOffset: null,
+    };
   }
 
   const nameById = new Map(hotelRows?.map((h) => [h.hotel_id, h.name]) ?? []);
@@ -74,11 +84,17 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
   const errors: string[] = [];
   let rowsWritten = 0;
 
-  const jobs = dates.flatMap((checkIn, dayIdx) =>
+  const allJobs = dates.flatMap((checkIn, dayIdx) =>
     [...tracked.values()]
       .filter((h) => dayIdx < h.horizon)
       .map((hotel) => ({ checkIn, hotel }))
   );
+  // Serverless functions are wall-clock limited (60s on Vercel's Hobby
+  // plan), so a run is sliced into chunks the caller loops over.
+  const offset = chunk?.offset ?? 0;
+  const limit = chunk?.limit ?? allJobs.length;
+  const jobs = allJobs.slice(offset, offset + limit);
+  const isLastChunk = offset + limit >= allJobs.length;
 
   const CONCURRENCY = 4;
   let cursor = 0;
@@ -125,10 +141,11 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
 
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-  // Best-effort enrichment: local events + review standing.
-  errors.push(...(await refreshEvents(supa, profiles)));
-  errors.push(...(await refreshRatings(supa, profiles)));
-  errors.push(...(await refreshGeo(supa, profiles)));
+  // Enrichment is only worth running once the rates are in.
+  if (isLastChunk) {
+    errors.push(...(await refreshEvents(supa, profiles)));
+    errors.push(...(await refreshRatings(supa, profiles)));
+  }
 
   return {
     profiles: profiles.length,
@@ -136,5 +153,7 @@ export async function runSnapshot(maxDates?: number): Promise<SnapshotResult> {
     dates: dates.length,
     rowsWritten,
     errors: errors.slice(0, 10),
+    total: allJobs.length,
+    nextOffset: isLastChunk ? null : offset + limit,
   };
 }
