@@ -94,6 +94,7 @@ export interface GridResponse {
   profile: Profile;
   baselines: Baseline[];
   activeBaselineId: string | null;
+  compsAreDiscovered: boolean;
   rankStats: RankStat[];
   hotels: Hotel[];
   mapHotels: Hotel[];

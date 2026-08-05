@@ -46,9 +46,8 @@
 }
 
 /* Themes are explicit: light is the default, and the toggle stamps
-   data-theme on <html> for the two dark variants. Dark keeps blue-grey
-   surfaces; Midnight goes to near-black for low-light rooms. Both carry the
-   same grid structure and data colours as light — only the surfaces change. */
+   data-theme="dark" on <html>. Dark carries the same grid structure and data
+   colours as light — only the surfaces change. */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0f151d;
@@ -82,41 +81,6 @@
   --status-serious: #f08a55;
   --status-critical: #f2706a;
   --delta-good-text: #35c07e;
-}
-
-:root[data-theme="midnight"] {
-  color-scheme: dark;
-  --page: #000205;
-  --surface: #06090e;
-  --surface-2: #0c1118;
-  --text-primary: #e9eff7;
-  --text-secondary: #9fabbc;
-  --text-muted: #6b7789;
-  --gridline: #141b24;
-  --baseline: #2a3442;
-  --border: rgba(190, 208, 230, 0.13);
-
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.8);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 12px 30px -16px rgba(0, 0, 0, 0.95);
-  --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.85), 0 28px 64px -24px rgba(0, 0, 0, 1);
-  --shadow-edge: 8px 0 18px -10px rgba(0, 0, 0, 0.95);
-
-  --accent: #5aa4ff;
-  --accent-600: #7bb7ff;
-  --accent-700: #9ccaff;
-  --accent-soft: rgba(90, 164, 255, 0.15);
-  --accent-ink: #000308;
-
-  --series-1: #5aa4ff;
-  --div-low: #5aa4ff;
-  --div-mid: #101720;
-  --div-high: #ff7169;
-
-  --status-good: #3ccb86;
-  --status-warning: #e8b048;
-  --status-serious: #f5945c;
-  --status-critical: #ff7b74;
-  --delta-good-text: #3ccb86;
 }
 
 html,

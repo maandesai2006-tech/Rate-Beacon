@@ -104,13 +104,24 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
       ? baselineIdParam
       : baselines[0]?.hotel_id) ?? null;
 
-  // The grid shows the active baseline plus its own competitor set. When no
-  // set is configured, fall back to every other tracked hotel.
+  // The grid shows the active baseline plus its own discovered competitor
+  // set. Before discovery has run there are no edges; fall back to tracked
+  // hotels in the SAME TripAdvisor location only — never the whole profile,
+  // which would mix unrelated markets (e.g. Destin under a Pensacola hotel).
+  const baselineLocation = activeBaselineId ? activeBaselineId.split("-")[0] : null;
   const compIds =
-    activeBaselineId && compsByBaseline.has(activeBaselineId)
+    activeBaselineId && (compsByBaseline.get(activeBaselineId)?.length ?? 0) > 0
       ? (compsByBaseline.get(activeBaselineId) as string[])
-      : allTracked.filter((h) => h.hotel_id !== activeBaselineId).map((h) => h.hotel_id);
+      : allTracked
+          .filter(
+            (h) =>
+              h.hotel_id !== activeBaselineId &&
+              !h.is_mine &&
+              h.hotel_id.split("-")[0] === baselineLocation
+          )
+          .map((h) => h.hotel_id);
   const compIdSet = new Set(compIds);
+  const compsAreDiscovered = (compsByBaseline.get(activeBaselineId ?? "")?.length ?? 0) > 0;
 
   const byId = new Map(allTracked.map((h) => [h.hotel_id, h]));
   const hotels: Hotel[] = [
@@ -390,6 +401,7 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
     profile,
     baselines,
     activeBaselineId,
+    compsAreDiscovered,
     rankStats,
     hotels,
     mapHotels: mapExtras,

@@ -53,7 +53,7 @@ interface TooltipState {
 }
 
 type Tab = "grid" | "trends" | "ladder" | "map";
-type Theme = "light" | "dark" | "midnight";
+type Theme = "light" | "dark";
 
 export default function Dashboard() {
   const [profiles, setProfiles] = useState<ProfileStub[]>([]);
@@ -80,7 +80,7 @@ export default function Dashboard() {
   // Theme: explicit light/dark stamp on <html>, or follow the OS.
   useEffect(() => {
     const saved = localStorage.getItem("rb-theme") as Theme | null;
-    if (saved === "light" || saved === "dark" || saved === "midnight") setTheme(saved);
+    if (saved === "light" || saved === "dark") setTheme(saved);
   }, []);
   useEffect(() => {
     const root = document.documentElement;
@@ -280,7 +280,7 @@ export default function Dashboard() {
     );
   }
 
-  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats, mapHotels } = data;
+  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats, mapHotels, compsAreDiscovered } = data;
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
@@ -404,6 +404,15 @@ export default function Dashboard() {
         <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
           {refreshMsg}
         </p>
+      )}
+
+      {!compsAreDiscovered && (
+        <div className="card mt-4 p-4 text-[13px]">
+          <div className="kicker mb-1">Competitor set not discovered yet</div>
+          This hotel is showing other tracked hotels in the same TripAdvisor
+          location as a stand-in. Click <b>Find competitors</b> to build its own
+          set by distance.
+        </div>
       )}
 
       {!hasAnyData && (
@@ -743,46 +752,38 @@ function ThemeToggle({
   theme: Theme;
   onChange: (t: Theme) => void;
 }) {
-  const dark = theme !== "light";
   return (
     <div
-      className="inline-flex items-stretch overflow-hidden"
+      className="inline-flex overflow-hidden"
       style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface)" }}
+      role="group"
+      aria-label="Colour theme"
     >
-      <button
-        onClick={() => onChange("light")}
-        aria-pressed={theme === "light"}
-        title="Light"
-        className="px-2.5"
-        style={{
-          background: theme === "light" ? "var(--accent)" : "transparent",
-          color: theme === "light" ? "var(--accent-ink)" : "var(--text-secondary)",
-          transition: "background .18s var(--ease), color .18s var(--ease)",
-        }}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 4v1.5M12 18.5V20M4 12h1.5M18.5 12H20M6.3 6.3l1.1 1.1M16.6 16.6l1.1 1.1M17.7 6.3l-1.1 1.1M7.4 16.6l-1.1 1.1" />
-        </svg>
-      </button>
-      <select
-        value={dark ? theme : "dark"}
-        onChange={(e) => onChange(e.target.value as Theme)}
-        aria-label="Dark theme variant"
-        title="Dark themes"
-        className="px-2 text-[12px]"
-        style={{
-          background: dark ? "var(--accent)" : "transparent",
-          color: dark ? "var(--accent-ink)" : "var(--text-secondary)",
-          border: 0,
-          borderLeft: "1px solid var(--border)",
-          cursor: "pointer",
-          transition: "background .18s var(--ease), color .18s var(--ease)",
-        }}
-      >
-        <option value="dark">Dark</option>
-        <option value="midnight">Midnight</option>
-      </select>
+      {(["light", "dark"] as Theme[]).map((value) => (
+        <button
+          key={value}
+          onClick={() => onChange(value)}
+          aria-pressed={theme === value}
+          title={value === "light" ? "Light" : "Dark"}
+          className="px-2.5 py-1.5"
+          style={{
+            background: theme === value ? "var(--accent)" : "transparent",
+            color: theme === value ? "var(--accent-ink)" : "var(--text-secondary)",
+            transition: "background .18s var(--ease), color .18s var(--ease)",
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+            {value === "light" ? (
+              <>
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 4v1.5M12 18.5V20M4 12h1.5M18.5 12H20M6.3 6.3l1.1 1.1M16.6 16.6l1.1 1.1M17.7 6.3l-1.1 1.1M7.4 16.6l-1.1 1.1" />
+              </>
+            ) : (
+              <path d="M20 13.5A8 8 0 1 1 10.5 4a6.5 6.5 0 0 0 9.5 9.5z" />
+            )}
+          </svg>
+        </button>
+      ))}
     </div>
   );
 }
@@ -1193,6 +1194,8 @@ function GridRowView({
         className={`${binOf(row.myPrice, row.median)} cursor-pointer px-3 py-1.5 font-semibold tabular-nums`}
         style={{ boxShadow: "inset 2px 0 0 var(--accent), inset -2px 0 0 var(--accent)" }}
         onClick={() => !editing && onStartEdit()}
+        onMouseMove={(e) => myHotelId && cellTooltip(e, { hotel_id: myHotelId, name: "Your hotel", is_mine: true, rating: null, review_count: null, latitude: null, longitude: null })}
+        onMouseLeave={() => onTooltip(null)}
         title="Click to set your rate for this night"
       >
         {editing ? (
