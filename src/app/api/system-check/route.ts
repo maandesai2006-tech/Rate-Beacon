@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { hotelsNear } from "@/lib/overpass";
 
 // A one-click health report, in plain language. Every external dependency is
 // probed from the server (they are not reachable from a browser), so the
@@ -59,44 +60,60 @@ export async function GET() {
       : `HTTP ${rates.status} in ${rates.ms}ms. ${rates.body.slice(0, 180)}`,
   });
 
-  // 3. Hotel listing — the source of ratings and competitor discovery
-  const list = await timed("https://data.xotelo.com/api/list?location_key=g34550&limit=5");
+  // 3. Hotel listing — the source of ratings and competitor discovery. The
+  // endpoint rejects some parameter shapes, so probe the known variants and
+  // report which (if any) answers.
+  const inL = new Date(Date.now() + 14 * 86400e3).toISOString().slice(0, 10);
+  const outL = new Date(Date.now() + 15 * 86400e3).toISOString().slice(0, 10);
+  const listVariants: [string, string][] = [
+    ["basic", `location_key=g34550&offset=0&limit=30`],
+    ["sorted", `location_key=g34550&offset=0&limit=30&sort=best_value`],
+    ["dated", `location_key=g34550&chk_in=${inL}&chk_out=${outL}&offset=0&limit=30&currency=USD&adults=2&rooms=1`],
+    ["dated-min", `location_key=g34550&chk_in=${inL}&chk_out=${outL}&offset=0&limit=30`],
+    ["bare", `location_key=g34550`],
+  ];
+  let listWinner = "";
   let listCount = 0;
-  let listErr = "";
-  try {
-    const j = JSON.parse(list.body.startsWith("{") ? list.body : "{}");
-    if (j.error) listErr = JSON.stringify(j.error).slice(0, 160);
-    listCount = (j.result?.list ?? []).length;
-  } catch {
-    listErr = list.body.slice(0, 160);
+  const listNotes: string[] = [];
+  for (const [label, qs] of listVariants) {
+    const r = await timed(`https://data.xotelo.com/api/list?${qs}`);
+    let n = 0;
+    let msg = "";
+    try {
+      const j = JSON.parse(r.body.startsWith("{") ? r.body : "{}");
+      n = (j.result?.list ?? []).length;
+      if (j.error) msg = typeof j.error === "string" ? j.error : JSON.stringify(j.error);
+    } catch {
+      msg = r.body.slice(0, 90);
+    }
+    if (n > 0) {
+      listWinner = label;
+      listCount = n;
+      break;
+    }
+    listNotes.push(`${label}: ${msg.slice(0, 90) || `HTTP ${r.status}`}`);
   }
   checks.push({
     name: "Hotel listing (ratings, discovery)",
     ok: listCount > 0,
     detail:
       listCount > 0
-        ? `Returned ${listCount} hotels in ${list.ms}ms.`
-        : `No hotels returned (HTTP ${list.status}). ${listErr || list.body.slice(0, 160)}`,
+        ? `Works using the "${listWinner}" parameter shape — returned ${listCount} hotels.`
+        : `Every parameter shape was rejected. ${listNotes.join(" | ")}`,
   });
 
   // 4. Map source
-  const overpass = await timed("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    body: "data=" + encodeURIComponent("[out:json][timeout:15];node[\"tourism\"=\"hotel\"](around:3000,30.478,-87.209);out 5;"),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  });
-  let osmCount = 0;
-  try {
-    osmCount = (JSON.parse(overpass.body.startsWith("{") ? overpass.body : "{}").elements ?? []).length;
-  } catch {
-    osmCount = 0;
-  }
+  // Use the same code path the map itself uses, so the check cannot disagree
+  // with the feature.
+  const t0 = Date.now();
+  const osm = await hotelsNear(30.478, -87.209, 3000, 5);
   checks.push({
     name: "Map source (OpenStreetMap)",
-    ok: overpass.ok,
-    detail: overpass.ok
-      ? `Responding in ${overpass.ms}ms, ${osmCount} sample hotels nearby.`
-      : `HTTP ${overpass.status}. ${overpass.body.slice(0, 160)}`,
+    ok: osm.length > 0,
+    detail:
+      osm.length > 0
+        ? `Responding in ${Date.now() - t0}ms, ${osm.length} sample hotels nearby.`
+        : "No hotels returned from either Overpass mirror.",
   });
 
   // 5. Geocoding

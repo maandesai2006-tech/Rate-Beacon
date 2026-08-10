@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import type { GridResponse, GridRow, HistoryPoint, Hotel, MapPlace, RankStat } from "@/lib/types";
 import Sparkline from "@/components/Sparkline";
+import ReportsPanel from "@/components/ReportsPanel";
 import dynamicImport from "next/dynamic";
 
 // Leaflet touches window on import, so the map is client-only.
@@ -64,7 +65,7 @@ interface TooltipState {
   lines: string[];
 }
 
-type Tab = "grid" | "trends" | "ladder" | "map" | "ratings";
+type Tab = "grid" | "trends" | "ladder" | "map" | "ratings" | "reports";
 type Theme = "light" | "dark";
 
 export default function Dashboard() {
@@ -759,6 +760,12 @@ export default function Dashboard() {
         </div>
       )}
 
+      {tab === "reports" && (
+        <div className="card rise mt-4 p-5">
+          <ReportsPanel profileId={profileId} hotels={hotels} />
+        </div>
+      )}
+
       {tab === "map" && (
         <div className="card rise mt-4 p-5">
           <MapPanel rows={rows} hotels={[...hotels, ...(mapHotels ?? [])]} places={mapPlaces ?? []} fmt={fmt} theme={theme} />
@@ -856,6 +863,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
     ["ladder", "Rate ladder"],
     ["map", "Map"],
     ["ratings", "Ratings"],
+    ["reports", "Manager reports"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
   const [ind, setInd] = useState({ left: 0, width: 0 });
