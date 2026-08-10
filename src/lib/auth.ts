@@ -51,49 +51,73 @@ export function safeEqual(a: string, b: string): boolean {
 
 export interface Account {
   id: number;
-  email: string;
+  email: string | null;
+  username: string | null;
   password_hash: string;
   password_salt: string;
 }
 
+// An identifier is either an email address or a username.
+function looksLikeEmail(s: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);
+}
+
 export async function createAccount(
   supa: SupabaseClient,
-  email: string,
+  identifier: string,
   password: string
-): Promise<{ account?: { id: number; email: string }; error?: string }> {
-  const clean = email.trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean)) return { error: "Enter a valid email address" };
-  if (password.length < 8) return { error: "Use a password of at least 8 characters" };
+): Promise<{ account?: { id: number; label: string }; error?: string }> {
+  const clean = identifier.trim();
+  if (clean.length < 3) return { error: "Enter an email address or a username" };
+  const isEmail = looksLikeEmail(clean);
+  if (!isEmail && !/^[a-zA-Z0-9._-]{3,32}$/.test(clean)) {
+    return { error: "Usernames may use letters, numbers, dots, dashes and underscores" };
+  }
+  if (password.length < 5) return { error: "Use a password of at least 5 characters" };
 
   const salt = randomToken(16);
   const hash = await hashPassword(password, salt);
+  const row: {
+    email: string | null;
+    username: string | null;
+    password_hash: string;
+    password_salt: string;
+  } = {
+    email: isEmail ? clean.toLowerCase() : null,
+    username: isEmail ? null : clean,
+    password_hash: hash,
+    password_salt: salt,
+  };
   const { data, error } = await supa
     .from("accounts")
-    .insert({ email: clean, password_hash: hash, password_salt: salt })
-    .select("id, email")
-    .single<{ id: number; email: string }>();
+    .insert(row)
+    .select("id, email, username")
+    .single<{ id: number; email: string | null; username: string | null }>();
   if (error) {
-    if (error.code === "23505") return { error: "That email already has an account" };
+    if (error.code === "23505") return { error: "That account already exists" };
     return { error: error.message };
   }
-  return { account: data };
+  return { account: { id: data.id, label: data.username ?? data.email ?? clean } };
 }
 
 export async function verifyLogin(
   supa: SupabaseClient,
-  email: string,
+  identifier: string,
   password: string
 ): Promise<{ accountId?: number; error?: string }> {
-  const clean = email.trim().toLowerCase();
-  const { data: account } = await supa
+  const clean = identifier.trim();
+  // Match on email or username, both case-insensitively.
+  const { data: candidates } = await supa
     .from("accounts")
-    .select("id, email, password_hash, password_salt")
-    .eq("email", clean)
-    .maybeSingle<Account>();
-  if (!account) return { error: "Email or password is incorrect" };
+    .select("id, email, username, password_hash, password_salt")
+    .or(`email.ilike.${clean},username.ilike.${clean}`)
+    .limit(1)
+    .returns<Account[]>();
+  const account = candidates?.[0];
+  if (!account) return { error: "Username or password is incorrect" };
   const hash = await hashPassword(password, account.password_salt);
   if (!safeEqual(hash, account.password_hash)) {
-    return { error: "Email or password is incorrect" };
+    return { error: "Username or password is incorrect" };
   }
   await supa
     .from("accounts")

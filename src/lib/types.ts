@@ -98,9 +98,19 @@ export interface GridResponse {
   rankStats: RankStat[];
   hotels: Hotel[];
   mapHotels: Hotel[];
+  mapPlaces: MapPlace[];
   rows: GridRow[];
   weekdayAvg: { weekday: number; avgMedian: number | null }[];
   lastCapturedAt: string | null;
+}
+
+export interface MapPlace {
+  osm_id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  distance_km: number | null;
+  hotel_id: string | null;
 }
 
 export interface HistoryPoint {

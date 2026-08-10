@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "signup">("login");
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -19,7 +19,7 @@ export default function LoginPage() {
       const res = await fetch(`/api/auth/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ identifier, password }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error ?? "Something went wrong");
@@ -50,16 +50,16 @@ export default function LoginPage() {
           <h1 className="text-xl">Rate Beacon</h1>
         </div>
         <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
-          {mode === "login" ? "Sign in to your dashboard." : "Create an account."}
+          {mode === "login" ? "Sign in to your dashboard." : "Create an account with a username or email."}
         </p>
 
         <label className="mt-5 block text-xs" style={{ color: "var(--text-secondary)" }}>
-          Email
+          Username or email
           <input
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            type="text"
+            autoComplete="username"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
             className="input mt-1"
             required
           />
@@ -84,7 +84,7 @@ export default function LoginPage() {
 
         <button
           type="submit"
-          disabled={busy || !email || !password}
+          disabled={busy || !identifier || !password}
           className="btn-accent mt-5 w-full px-4 py-2.5"
         >
           {busy ? "Working…" : mode === "login" ? "Sign in" : "Create account"}

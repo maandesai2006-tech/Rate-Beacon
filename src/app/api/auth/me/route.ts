@@ -10,8 +10,8 @@ export async function GET(req: NextRequest) {
   if (!accountId) return NextResponse.json({ signedIn: false });
   const { data } = await supa
     .from("accounts")
-    .select("email")
+    .select("email, username")
     .eq("id", accountId)
-    .maybeSingle<{ email: string }>();
-  return NextResponse.json({ signedIn: true, email: data?.email ?? null });
+    .maybeSingle<{ email: string | null; username: string | null }>();
+  return NextResponse.json({ signedIn: true, label: data?.username ?? data?.email ?? null });
 }

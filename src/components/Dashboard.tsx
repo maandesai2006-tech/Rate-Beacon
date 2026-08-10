@@ -9,8 +9,20 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
-import type { GridResponse, GridRow, HistoryPoint, Hotel, RankStat } from "@/lib/types";
+import type { GridResponse, GridRow, HistoryPoint, Hotel, MapPlace, RankStat } from "@/lib/types";
 import Sparkline from "@/components/Sparkline";
+import dynamicImport from "next/dynamic";
+
+// Leaflet touches window on import, so the map is client-only.
+const RateMap = dynamicImport(() => import("@/components/RateMap"), {
+  ssr: false,
+  loading: () => (
+    <div
+      className="pulsing"
+      style={{ height: 560, borderRadius: 10, background: "var(--surface-2)" }}
+    />
+  ),
+});
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
 
@@ -65,6 +77,7 @@ export default function Dashboard() {
   const [tab, setTab] = useState<Tab>("grid");
   const [refreshing, setRefreshing] = useState(false);
   const [discovering, setDiscovering] = useState(false);
+  const [mapping, setMapping] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [drawerDate, setDrawerDate] = useState<string | null>(null);
@@ -253,6 +266,28 @@ export default function Dashboard() {
     }
   }
 
+  // Rebuild the map's nearby-hotel set from OpenStreetMap for this profile.
+  async function refreshMapSet() {
+    if (!profileId) return;
+    setMapping(true);
+    setRefreshMsg(null);
+    try {
+      const res = await fetch(`/api/map-set?profileId=${profileId}&limit=30`, { method: "POST" });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Map refresh failed");
+      const found = (j.results ?? []).reduce(
+        (a: number, r: { found?: number }) => a + (r.found ?? 0),
+        0
+      );
+      setRefreshMsg(`Map updated with ${found} nearby hotels.`);
+      await load();
+    } catch (e) {
+      setRefreshMsg(`Map refresh failed: ${(e as Error).message}`);
+    } finally {
+      setMapping(false);
+    }
+  }
+
   async function saveMyRate(date: string) {
     const raw = editValue.trim();
     setEditingDate(null);
@@ -331,7 +366,7 @@ export default function Dashboard() {
     );
   }
 
-  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats, mapHotels, compsAreDiscovered } = data;
+  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats, mapHotels, mapPlaces, compsAreDiscovered } = data;
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
@@ -409,6 +444,14 @@ export default function Dashboard() {
           <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-[13px]">
             Edit profile
           </Link>
+          <button
+            onClick={refreshMapSet}
+            disabled={mapping || refreshing}
+            className="btn-ghost px-3 py-1.5 text-[13px]"
+            title="Rebuild the map's nearby-hotel set from OpenStreetMap"
+          >
+            {mapping ? "Mapping…" : "Refresh map"}
+          </button>
           <button
             onClick={discover}
             disabled={discovering || refreshing}
@@ -669,7 +712,7 @@ export default function Dashboard() {
 
       {tab === "map" && (
         <div className="card rise mt-4 p-5">
-          <MapView rows={rows} hotels={[...hotels, ...(mapHotels ?? [])]} fmt={fmt} />
+          <MapPanel rows={rows} hotels={[...hotels, ...(mapHotels ?? [])]} places={mapPlaces ?? []} fmt={fmt} theme={theme} />
         </div>
       )}
 
@@ -1017,89 +1060,24 @@ function ThemeToggle({
   );
 }
 
-// Spatial rate view. Every hotel the pipeline has located is plotted —
-// tracked competitors and nearby context alike — coloured by price against
-// the night's market median. Names link straight to TripAdvisor.
-function MapView({
+// Map panel: night stepper plus the real slippy map.
+function MapPanel({
   rows,
   hotels,
+  places,
   fmt,
+  theme,
 }: {
   rows: GridRow[];
   hotels: Hotel[];
+  places: MapPlace[];
   fmt: (n: number) => string;
+  theme: "light" | "dark";
 }) {
   const [idx, setIdx] = useState(0);
-  const [hover, setHover] = useState<string | null>(null);
-  const row = rows[Math.min(idx, rows.length - 1)];
+  const row = rows[Math.min(idx, rows.length - 1)] ?? null;
   const located = hotels.filter((h) => h.latitude != null && h.longitude != null);
-
-  if (!row) return null;
-  if (located.length < 2) {
-    return (
-      <div>
-        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          {located.length === 1
-            ? "One hotel located so far — the map needs at least two."
-            : "No hotel coordinates yet."}
-        </p>
-        <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-          Coordinates come from the discovery pipeline (TripAdvisor listing →
-          OpenStreetMap geocode → distance ranking). Run{" "}
-          <code>Find competitors</code> in the header, or{" "}
-          <code>node scripts/discover.mjs 1</code> locally, then refresh rates.
-        </p>
-      </div>
-    );
-  }
-
-  const W = 940;
-  const H = 520;
-  const pad = 60;
-  const lats = located.map((h) => h.latitude as number);
-  const lons = located.map((h) => h.longitude as number);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLon = Math.min(...lons);
-  const maxLon = Math.max(...lons);
-  const midLat = (minLat + maxLat) / 2;
-  // A degree of longitude narrows with latitude, so correct it or the map
-  // stretches east-west.
-  const lonScale = Math.cos((midLat * Math.PI) / 180);
-  const spanLat = Math.max(maxLat - minLat, 0.004);
-  const spanLon = Math.max((maxLon - minLon) * lonScale, 0.004);
-  const scale = Math.min((W - 2 * pad) / spanLon, (H - 2 * pad) / spanLat);
-  const cx = (lon: number) => W / 2 + (lon - (minLon + maxLon) / 2) * lonScale * scale;
-  const cy = (lat: number) => H / 2 - (lat - midLat) * scale;
-
-  const mkt = row.median;
-  function tone(price: number | null): string {
-    if (price == null) return "var(--baseline)";
-    if (mkt == null || mkt === 0) return "var(--series-1)";
-    const pct = ((price - mkt) / mkt) * 100;
-    if (pct <= -15) return "var(--div-low)";
-    if (pct <= -5) return "color-mix(in oklab, var(--div-low) 62%, var(--surface))";
-    if (pct < 5) return "var(--baseline)";
-    if (pct < 15) return "color-mix(in oklab, var(--div-high) 62%, var(--surface))";
-    return "var(--div-high)";
-  }
-
-  const points = located
-    .map((h) => {
-      const c = row.cells[h.hotel_id];
-      const price = h.is_mine ? row.myPrice ?? c?.price ?? null : c?.price ?? null;
-      return {
-        hotel: h,
-        price,
-        x: cx(h.longitude as number),
-        y: cy(h.latitude as number),
-      };
-    })
-    .sort((a, b) => Number(a.hotel.is_mine) - Number(b.hotel.is_mine));
-
-  const hovered = points.find((p) => p.hotel.hotel_id === hover) ?? null;
-  const kmPx = scale / 111;
-  const priced = points.filter((p) => p.price != null).length;
+  const total = located.length + places.filter((p) => !p.hotel_id).length;
 
   return (
     <div>
@@ -1132,126 +1110,20 @@ function MapView({
           →
         </button>
         <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
-          {row.median != null && <>median {fmt(row.median)} · </>}
-          {priced} of {located.length} hotels priced
+          {row?.median != null && <>median {fmt(row.median)} · </>}
+          {total} hotels on the map
         </span>
       </div>
 
-      <div className="relative mt-3 overflow-x-auto">
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          className="w-full min-w-[640px]"
-          role="img"
-          aria-label="Hotels plotted by location, coloured by price against the market median"
-        >
-          <defs>
-            <pattern id="rb-grid" width="48" height="48" patternUnits="userSpaceOnUse">
-              <path d="M48 0H0V48" fill="none" stroke="var(--gridline)" strokeWidth="1" />
-            </pattern>
-          </defs>
-          <rect x="0" y="0" width={W} height={H} fill="url(#rb-grid)" />
-
-          {points
-            .filter((p) => p.hotel.is_mine)
-            .map((p) =>
-              [1, 2, 4].map((km) => (
-                <circle
-                  key={`${p.hotel.hotel_id}-${km}`}
-                  cx={p.x}
-                  cy={p.y}
-                  r={km * kmPx}
-                  fill="none"
-                  stroke="var(--accent)"
-                  strokeOpacity={0.18}
-                  strokeDasharray="4 6"
-                />
-              ))
-            )}
-
-          {points.map((p) => {
-            const mine = p.hotel.is_mine;
-            const r = mine ? 10 : 7;
-            const isHover = hover === p.hotel.hotel_id;
-            return (
-              <g
-                key={p.hotel.hotel_id}
-                onMouseEnter={() => setHover(p.hotel.hotel_id)}
-                onMouseLeave={() => setHover(null)}
-                style={{ cursor: "pointer" }}
-              >
-                <circle
-                  cx={p.x}
-                  cy={p.y}
-                  r={r + (isHover ? 3 : 0)}
-                  fill={tone(p.price)}
-                  stroke="var(--surface)"
-                  strokeWidth="2"
-                  style={{ transition: "r .16s var(--ease)" }}
-                />
-                {mine && (
-                  <path
-                    d="M0,-5 L1.4,-1.5 L5.1,-1.5 L2.1,0.7 L3.2,4.2 L0,2 L-3.2,4.2 L-2.1,0.7 L-5.1,-1.5 L-1.4,-1.5 Z"
-                    transform={`translate(${p.x},${p.y})`}
-                    fill="var(--accent-ink)"
-                  />
-                )}
-                {p.price != null && (
-                  <text
-                    x={p.x}
-                    y={p.y - r - 6}
-                    textAnchor="middle"
-                    fontSize="11"
-                    fontWeight={mine ? 700 : 500}
-                    fill="var(--text-primary)"
-                    style={{ pointerEvents: "none" }}
-                  >
-                    {fmt(p.price)}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-
-          <g transform={`translate(${pad},${H - 24})`}>
-            <line x1="0" y1="0" x2={2 * kmPx} y2="0" stroke="var(--text-muted)" strokeWidth="2" />
-            <line x1="0" y1="-4" x2="0" y2="4" stroke="var(--text-muted)" strokeWidth="2" />
-            <line x1={2 * kmPx} y1="-4" x2={2 * kmPx} y2="4" stroke="var(--text-muted)" strokeWidth="2" />
-            <text x={kmPx} y="-8" textAnchor="middle" fontSize="10" fill="var(--text-muted)">
-              2 km
-            </text>
-          </g>
-        </svg>
-
-        {hovered && (
-          <div
-            className="card fade max-w-[260px] px-3 py-2 text-xs"
-            style={{ position: "absolute", top: 8, right: 8, zIndex: 5, boxShadow: "var(--shadow-lg)" }}
-          >
-            <a
-              href={tripAdvisorUrl(hovered.hotel.hotel_id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-semibold hover:underline"
-              style={{ color: "var(--accent)" }}
-            >
-              {hovered.hotel.name} ↗
-            </a>
-            <div className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
-              {hovered.price != null ? fmt(hovered.price) : "no rate captured"}
-              {hovered.price != null && mkt != null && mkt > 0 && (
-                <>
-                  {" · "}
-                  {((hovered.price - mkt) / mkt) * 100 >= 0 ? "+" : ""}
-                  {(((hovered.price - mkt) / mkt) * 100).toFixed(0)}% vs median
-                </>
-              )}
-            </div>
-          </div>
-        )}
+      <div className="mt-3">
+        <RateMap row={row} hotels={hotels} places={places} fmt={fmt} theme={theme} />
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs" style={{ color: "var(--text-secondary)" }}>
-        <span>Dot colour = price vs median:</span>
+      <div
+        className="mt-3 flex flex-wrap items-center gap-3 text-xs"
+        style={{ color: "var(--text-secondary)" }}
+      >
+        <span>Pin colour = price vs median:</span>
         {[
           ["var(--div-low)", "cheaper"],
           ["var(--baseline)", "at market"],
@@ -1262,33 +1134,7 @@ function MapView({
             {label}
           </span>
         ))}
-        <span>· starred dots are your hotels · rings mark 1, 2 and 4 km</span>
-      </div>
-
-      <div className="mt-4 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
-        {points
-          .slice()
-          .sort((a, b) => (b.price ?? -1) - (a.price ?? -1))
-          .map((p) => (
-            <div key={p.hotel.hotel_id} className="flex items-baseline justify-between gap-2 py-0.5">
-              <a
-                href={tripAdvisorUrl(p.hotel.hotel_id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="truncate hover:underline"
-                style={{
-                  color: p.hotel.is_mine ? "var(--accent)" : "var(--text-secondary)",
-                  fontWeight: p.hotel.is_mine ? 700 : 400,
-                }}
-                title={p.hotel.name}
-              >
-                {p.hotel.name}
-              </a>
-              <span className="tabular-nums" style={{ color: "var(--text-muted)" }}>
-                {p.price != null ? fmt(p.price) : "—"}
-              </span>
-            </div>
-          ))}
+        <span>· starred pins are your hotels · grey pins are nearby hotels without a tracked rate</span>
       </div>
     </div>
   );

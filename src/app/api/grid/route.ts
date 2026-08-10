@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
 import { addDaysISO, dateRange, todayISO, weekdayOf } from "@/lib/dates";
 import { adviceFor, demandScore, median, positionOf } from "@/lib/insights";
 import { getHolidays, getWeather } from "@/lib/signals";
@@ -31,20 +32,38 @@ interface SnapshotRow {
 
 export async function GET(req: NextRequest) {
   try {
+    const accountId = await accountForSession(db(), req.cookies.get(SESSION_COOKIE)?.value);
+    if (!accountId) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
     const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
     const baselineId = req.nextUrl.searchParams.get("baselineId");
-    return await buildGrid(profileId, baselineId);
+    return await buildGrid(profileId, baselineId, accountId);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }
 
-async function buildGrid(profileId: number | null, baselineIdParam: string | null) {
+async function buildGrid(
+  profileId: number | null,
+  baselineIdParam: string | null,
+  accountId: number
+) {
   const supa = db();
   const today = todayISO();
 
-  let profileQuery = supa.from("profiles").select("*").order("id").limit(1);
-  if (profileId) profileQuery = supa.from("profiles").select("*").eq("id", profileId).limit(1);
+  let profileQuery = supa
+    .from("profiles")
+    .select("*")
+    .eq("account_id", accountId)
+    .order("id")
+    .limit(1);
+  if (profileId) {
+    profileQuery = supa
+      .from("profiles")
+      .select("*")
+      .eq("account_id", accountId)
+      .eq("id", profileId)
+      .limit(1);
+  }
   const profileRes = await profileQuery.maybeSingle<Profile>();
   if (profileRes.error) throw new Error(`Database query failed: ${profileRes.error.message}`);
   const profile = profileRes.data;
@@ -175,6 +194,13 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
       .order("captured_at", { ascending: false })
       .limit(1),
   ]);
+
+  const { data: mapPlaceRows } = await supa
+    .from("map_places")
+    .select("osm_id, name, latitude, longitude, distance_km, hotel_id")
+    .eq("profile_id", profile.id)
+    .eq("baseline_hotel_id", activeBaselineId ?? "")
+    .order("distance_km");
 
   // External demand signals (all best-effort).
   const horizonYears = [...new Set([today, horizonEnd].map((d) => Number(d.slice(0, 4))))];
@@ -405,6 +431,7 @@ async function buildGrid(profileId: number | null, baselineIdParam: string | nul
     rankStats,
     hotels,
     mapHotels: mapExtras,
+    mapPlaces: mapPlaceRows ?? [],
     rows,
     weekdayAvg,
     lastCapturedAt: lastCapRes.data?.[0]?.captured_at ?? null,

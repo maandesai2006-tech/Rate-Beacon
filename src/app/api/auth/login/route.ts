@@ -3,15 +3,15 @@ import { db } from "@/lib/db";
 import { SESSION_COOKIE, SESSION_MAX_AGE, startSession, verifyLogin } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  const { email, password } = (await req.json().catch(() => ({}))) as {
-    email?: string;
+  const { identifier, password } = (await req.json().catch(() => ({}))) as {
+    identifier?: string;
     password?: string;
   };
-  if (!email || !password) {
-    return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
+  if (!identifier || !password) {
+    return NextResponse.json({ error: "Enter your username or email and password" }, { status: 400 });
   }
   const supa = db();
-  const { accountId, error } = await verifyLogin(supa, email, password);
+  const { accountId, error } = await verifyLogin(supa, identifier, password);
   if (error || !accountId) return NextResponse.json({ error }, { status: 401 });
 
   const token = await startSession(supa, accountId);

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
 
 /* Rate Beacon design system.
    Chrome (buttons, tabs, the baseline hotel's identity) is one bright azure
@@ -347,3 +348,60 @@ h1, h2, h3, h4, h5, h6 {
 .bin-1  { background: color-mix(in oklab, var(--div-high) 12%, var(--surface)); }
 .bin-2  { background: color-mix(in oklab, var(--div-high) 26%, var(--surface)); }
 .bin-na { background: var(--surface); color: var(--text-muted); }
+
+/* ── Map ───────────────────────────────────────────────────────────────── */
+
+.leaflet-container {
+  font-family: var(--font-body);
+  background: var(--surface-2);
+}
+.leaflet-control-attribution {
+  background: color-mix(in oklab, var(--surface) 88%, transparent) !important;
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+}
+.leaflet-control-attribution a { color: var(--text-secondary) !important; }
+.leaflet-bar a {
+  background: var(--surface) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border) !important;
+}
+.leaflet-bar a:hover { background: var(--surface-2) !important; }
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--surface) !important;
+  color: var(--text-primary) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+.leaflet-popup-content { font-size: 12px; line-height: 1.5; margin: 10px 12px; }
+.leaflet-popup-content a { color: var(--accent); }
+
+/* Price pins. The wrapper has no box of its own so the pill can centre on
+   the coordinate. */
+.rb-pin-wrap { background: none !important; border: 0 !important; }
+.rb-pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--pin);
+  color: #fff;
+  font: 600 11px/1.1 var(--font-heading);
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  border: 1.5px solid var(--surface);
+  cursor: pointer;
+  transition: transform 0.14s var(--ease);
+}
+.rb-pin:hover { transform: translate(-50%, -50%) scale(1.12); z-index: 900; }
+.rb-pin--mine { padding: 4px 9px; font-size: 12px; }
+.rb-pin--muted {
+  background: var(--surface);
+  color: var(--text-muted);
+  border-color: var(--baseline);
+  font-weight: 500;
+}
+.rb-pin__star { font-size: 10px; }
