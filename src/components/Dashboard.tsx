@@ -78,6 +78,9 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [mapping, setMapping] = useState(false);
+  const [ratingsBusy, setRatingsBusy] = useState(false);
+  const [checks, setChecks] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null);
+  const [checking, setChecking] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [drawerDate, setDrawerDate] = useState<string | null>(null);
@@ -177,6 +180,7 @@ export default function Dashboard() {
   // If the map has no coordinates yet, place them in the background so the
   // map is populated the next time it is opened — no manual step.
   const mapFillStarted = useRef(false);
+  const ratingsFillStarted = useRef(false);
   useEffect(() => {
     if (mapFillStarted.current || !data || !data.configured) return;
     const anyLocated = [...data.hotels, ...(data.mapHotels ?? [])].some(
@@ -188,6 +192,30 @@ export default function Dashboard() {
   }, [data, fillMap]);
 
 
+
+  // Fill in review scores, looping until the server reports none pending.
+  const fillRatings = useCallback(async () => {
+    setRatingsBusy(true);
+    try {
+      for (let guard = 0; guard < 8; guard++) {
+        const res = await fetch("/api/ratings?limit=25", { method: "POST" });
+        if (!res.ok) break;
+        const j = (await res.json()) as { remaining?: number; updated?: number };
+        if (!j.remaining || !j.updated) break;
+      }
+      await load();
+    } finally {
+      setRatingsBusy(false);
+    }
+  }, [load]);
+
+  useEffect(() => {
+    if (tab !== "ratings" || ratingsFillStarted.current) return;
+    if (!data || !data.configured) return;
+    if (data.hotels.some((h) => h.rating != null)) return;
+    ratingsFillStarted.current = true;
+    fillRatings().catch(() => {});
+  }, [tab, data, fillRatings]);
 
   // The server can only work for ~60s at a time, so the refresh is driven
   // from here in chunks until the run reports it is finished.
@@ -267,6 +295,7 @@ export default function Dashboard() {
   }
 
   // Rebuild the map's nearby-hotel set from OpenStreetMap for this profile.
+
   async function refreshMapSet() {
     if (!profileId) return;
     setMapping(true);
@@ -285,6 +314,20 @@ export default function Dashboard() {
       setRefreshMsg(`Map refresh failed: ${(e as Error).message}`);
     } finally {
       setMapping(false);
+    }
+  }
+
+
+  async function runSystemCheck() {
+    setChecking(true);
+    try {
+      const res = await fetch("/api/system-check");
+      const j = await res.json();
+      setChecks(j.checks ?? []);
+    } catch (e) {
+      setChecks([{ name: "System check", ok: false, detail: (e as Error).message }]);
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -706,7 +749,13 @@ export default function Dashboard() {
 
       {tab === "ratings" && (
         <div className="card rise mt-4 p-5">
-          <RatingsTable hotels={hotels} rows={rows} fmt={fmt} />
+          <RatingsTable
+            hotels={hotels}
+            rows={rows}
+            fmt={fmt}
+            busy={ratingsBusy}
+            onFetch={fillRatings}
+          />
         </div>
       )}
 
@@ -735,6 +784,42 @@ export default function Dashboard() {
           ))}
         </div>
       )}
+
+      <div className="card mt-6 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="mr-auto">
+            <div className="kicker">System check</div>
+            <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>
+              Tests every data source this dashboard depends on and reports what
+              is working.
+            </p>
+          </div>
+          <button
+            onClick={runSystemCheck}
+            disabled={checking}
+            className="btn-ghost px-3 py-1.5 text-[13px]"
+          >
+            {checking ? "Checking…" : "Run check"}
+          </button>
+        </div>
+        {checks && (
+          <ul className="mt-3 space-y-1.5">
+            {checks.map((c) => (
+              <li key={c.name} className="flex items-start gap-2 text-[13px]">
+                <span
+                  className="mt-[3px] inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ background: c.ok ? "var(--status-good)" : "var(--status-critical)" }}
+                  aria-hidden
+                />
+                <span>
+                  <b>{c.name}:</b>{" "}
+                  <span style={{ color: "var(--text-secondary)" }}>{c.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {drawerRow && (
         <HistoryDrawer
@@ -864,10 +949,14 @@ function RatingsTable({
   hotels,
   rows,
   fmt,
+  busy,
+  onFetch,
 }: {
   hotels: Hotel[];
   rows: GridRow[];
   fmt: (n: number) => string;
+  busy: boolean;
+  onFetch: () => void;
 }) {
   const rated = hotels.filter((h) => h.rating != null);
   // Average price over the horizon, for the value comparison.
@@ -883,13 +972,20 @@ function RatingsTable({
     return (
       <div>
         <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          No review scores collected yet.
+          {busy ? "Looking up review scores…" : "No review scores collected yet."}
         </p>
         <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-          Ratings come from TripAdvisor via the same feed as the rates, and are
-          refreshed weekly by the daily job. They appear after the next
-          successful refresh.
+          Scores are gathered from TripAdvisor&apos;s public data. If this stays
+          empty, that source is not returning hotel records right now — run the
+          system check at the bottom of the page to see which feeds are up.
         </p>
+        <button
+          onClick={onFetch}
+          disabled={busy}
+          className="btn-ghost mt-3 px-3 py-1.5 text-[13px]"
+        >
+          {busy ? "Fetching…" : "Fetch review scores"}
+        </button>
       </div>
     );
   }
