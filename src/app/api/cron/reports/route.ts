@@ -12,9 +12,14 @@ export async function GET(req: NextRequest) {
   }
   const supa = db();
   const { data: sources } = await supa.from("email_sources").select("*");
+  const list = sources ?? [];
+  // Share the 60-second ceiling across every connected mailbox rather than
+  // letting the first one spend it all. A daily run only has a night or two of
+  // mail to collect; a backfill resumes on the next run.
+  const budgetEach = list.length ? Math.floor(45_000 / list.length) : 45_000;
   const outcomes = [];
-  for (const s of sources ?? []) {
-    outcomes.push(await syncMailbox(supa, s));
+  for (const s of list) {
+    outcomes.push(await syncMailbox(supa, s, budgetEach));
   }
   return NextResponse.json({ checked: outcomes.length, outcomes });
 }

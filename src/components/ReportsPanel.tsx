@@ -109,18 +109,32 @@ export default function ReportsPanel({
   async function syncMail() {
     if (!profileId) return;
     setMailBusy(true);
+    // A mailbox holding years of reports takes more than one 60-second
+    // function call, so keep resuming until the server says it is done.
+    let scanned = 0;
+    let filed = 0;
+    let firstSkip: string | null = null;
     try {
-      const res = await fetch(`/api/reports/email/sync?profileId=${profileId}`, { method: "POST" });
-      const j = await res.json();
-      if (j.error) {
-        setMailMsg(j.error);
-      } else {
+      for (let pass = 0; pass < 200; pass++) {
+        const res = await fetch(`/api/reports/email/sync?profileId=${profileId}`, {
+          method: "POST",
+        });
+        const j = await res.json();
+        if (j.error) {
+          setMailMsg(j.error);
+          break;
+        }
+        scanned += j.scanned ?? 0;
+        filed += j.filed ?? 0;
+        if (!firstSkip && j.skipped?.length) firstSkip = j.skipped[0];
         setMailMsg(
-          `Checked ${j.scanned} message${j.scanned === 1 ? "" : "s"}, filed ${j.filed} report${j.filed === 1 ? "" : "s"}.` +
-            (j.skipped?.length ? ` Skipped: ${j.skipped[0]}` : "")
+          `Checked ${scanned} message${scanned === 1 ? "" : "s"}, filed ${filed} report${filed === 1 ? "" : "s"}${
+            j.hasMore ? " — still working through the mailbox…" : "."
+          }` + (firstSkip ? ` Skipped: ${firstSkip}` : "")
         );
-        await load();
+        if (!j.hasMore) break;
       }
+      await load();
       await loadMail();
     } catch (e) {
       setMailMsg((e as Error).message);
