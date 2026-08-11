@@ -1,0 +1,25 @@
+name = "rate-beacon-email-ingest"
+main = "src/worker.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Everything here is on Cloudflare's free plan: Email Routing is free on any
+# zone, and Workers gives 100k requests/day. A hotel sends one report a day.
+
+[vars]
+# Point this at the deployed Vercel app.
+INGEST_URL = "https://rate-beacon.vercel.app/api/ingest-report"
+
+# Optional. Comma-separated sender domains allowed to submit reports; unset
+# accepts anyone the Email Routing rule lets through.
+# ALLOWED_SENDER_DOMAINS = "ihg.com,hilton.com,cwspensacola.com"
+
+# Optional. Mail with no usable report is forwarded here instead of bounced.
+# FORWARD_UNMATCHED_TO = "you@example.com"
+
+# INGEST_SECRET is a secret, not a var:
+#   npx wrangler secret put INGEST_SECRET
+# It must match INGEST_SECRET in the Vercel project's environment variables.
+
+[observability]
+enabled = true

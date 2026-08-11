@@ -1,0 +1,19 @@
+{
+  "name": "rate-beacon-email-ingest",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Email Worker that forwards manager's-report attachments to the Rate Beacon ingest API.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "dependencies": {
+    "postal-mime": "^2.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250906.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.30.0"
+  }
+}

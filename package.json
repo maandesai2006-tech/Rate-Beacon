@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@google/genai": "^2.16.0",
     "@supabase/supabase-js": "^2.45.0",
     "leaflet": "^1.9.4",
     "mailparser": "^3.9.15",

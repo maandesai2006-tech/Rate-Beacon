@@ -4,6 +4,7 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { extractMetrics, extractReportDate, matchHotel } from "./reports";
 import { todayISO } from "./dates";
+import { storeDailyReport, DAILY_METRIC_COLUMNS } from "./daily-reports";
 
 export interface IngestInput {
   profileId: number;
@@ -97,6 +98,31 @@ export async function ingestReport(
       })),
       { onConflict: "report_id,metric" }
     );
+
+    // Mirror into the normalised layer so a report collected over IMAP or by
+    // upload produces the same row, and the same fifteen flags, as one that
+    // arrived through the Cloudflare Worker.
+    const wide: Partial<Record<(typeof DAILY_METRIC_COLUMNS)[number], number>> = {};
+    for (const m of metrics) {
+      const col = m.metric === "occupancy" ? "occupancy_percent" : m.metric;
+      if ((DAILY_METRIC_COLUMNS as readonly string[]).includes(col)) {
+        wide[col as (typeof DAILY_METRIC_COLUMNS)[number]] = m.value;
+      }
+    }
+    try {
+      await storeDailyReport(supa, {
+        profileId: input.profileId,
+        hotelId: match.hotelId,
+        reportDate,
+        metrics: wide,
+        source: input.source,
+        extractor: "text-parser",
+        rawReportId: report.id,
+      });
+    } catch {
+      // The raw report is already saved; a failure to normalise should not
+      // lose it, and re-ingesting the same report replays this step.
+    }
   }
 
   return {
