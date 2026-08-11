@@ -38,6 +38,27 @@ export default function ReportsPanel({
   const [msg, setMsg] = useState<string | null>(null);
   const [pickHotel, setPickHotel] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const [mail, setMail] = useState<{
+    host: string;
+    port: number;
+    username: string;
+    mailbox: string;
+    subject_filter: string | null;
+    from_filter: string | null;
+    last_sync_at: string | null;
+    last_status: string | null;
+  } | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({
+    host: "imap.one.com",
+    port: 993,
+    username: "",
+    password: "",
+    mailbox: "INBOX",
+    subjectFilter: "",
+  });
+  const [mailBusy, setMailBusy] = useState(false);
+  const [mailMsg, setMailMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!profileId) return;
@@ -48,9 +69,72 @@ export default function ReportsPanel({
     setActive((cur) => cur ?? j.hotels?.[0]?.hotelId ?? null);
   }, [profileId]);
 
+  const loadMail = useCallback(async () => {
+    if (!profileId) return;
+    const res = await fetch(`/api/reports/email?profileId=${profileId}`);
+    if (!res.ok) return;
+    const j = await res.json();
+    setMail(j.source ?? null);
+    if (j.source) setShowForm(false);
+  }, [profileId]);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadMail();
+  }, [load, loadMail]);
+
+  async function connectMail() {
+    if (!profileId) return;
+    setMailBusy(true);
+    setMailMsg(null);
+    try {
+      const res = await fetch("/api/reports/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, profileId }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Could not connect");
+      setMailMsg(j.detail ?? "Connected.");
+      setForm((f) => ({ ...f, password: "" }));
+      await loadMail();
+      await syncMail();
+    } catch (e) {
+      setMailMsg((e as Error).message);
+    } finally {
+      setMailBusy(false);
+    }
+  }
+
+  async function syncMail() {
+    if (!profileId) return;
+    setMailBusy(true);
+    try {
+      const res = await fetch(`/api/reports/email/sync?profileId=${profileId}`, { method: "POST" });
+      const j = await res.json();
+      if (j.error) {
+        setMailMsg(j.error);
+      } else {
+        setMailMsg(
+          `Checked ${j.scanned} message${j.scanned === 1 ? "" : "s"}, filed ${j.filed} report${j.filed === 1 ? "" : "s"}.` +
+            (j.skipped?.length ? ` Skipped: ${j.skipped[0]}` : "")
+        );
+        await load();
+      }
+      await loadMail();
+    } catch (e) {
+      setMailMsg((e as Error).message);
+    } finally {
+      setMailBusy(false);
+    }
+  }
+
+  async function disconnectMail() {
+    if (!profileId) return;
+    await fetch(`/api/reports/email?profileId=${profileId}`, { method: "DELETE" });
+    setMail(null);
+    setMailMsg(null);
+  }
 
   async function upload(file: File) {
     if (!profileId) return;
@@ -87,14 +171,14 @@ export default function ReportsPanel({
         <div className="min-w-[260px] flex-1">
           <div className="kicker">Add a report</div>
           <p className="mt-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
-            Upload the manager&apos;s report as CSV, TSV or text — or forward the
-            email automatically to the address below.
+            Upload the manager&apos;s report — PDF, CSV or text. Or connect the
+            mailbox once and every new report files itself.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <input
               ref={fileRef}
               type="file"
-              accept=".csv,.tsv,.txt,.text,.eml,.htm,.html"
+              accept=".pdf,.csv,.tsv,.txt,.text,.eml,.htm,.html"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];
@@ -130,19 +214,112 @@ export default function ReportsPanel({
           )}
         </div>
 
-        <div className="min-w-[260px] flex-1">
-          <div className="kicker">Forward by email</div>
-          <p className="mt-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
-            Point any inbound-email service at{" "}
-            <code>/api/reports/inbound</code> and use this token as the address
-            tag. Reports arriving there are parsed and filed automatically.
-          </p>
-          <code
-            className="mt-2 block rounded px-2.5 py-2 text-[12px]"
-            style={{ background: "var(--surface-2)", color: "var(--text-primary)" }}
-          >
-            reports+{data?.inboxToken ?? "…"}@your-domain
-          </code>
+        <div className="min-w-[300px] flex-1">
+          <div className="kicker">Automatic collection</div>
+          {mail ? (
+            <>
+              <p className="mt-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
+                Connected to <b>{mail.username}</b> on {mail.host}. New reports
+                are collected daily; nothing else to do.
+              </p>
+              {mail.last_status && (
+                <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                  {mail.last_sync_at
+                    ? `Last checked ${new Date(mail.last_sync_at).toLocaleString()} — `
+                    : ""}
+                  {mail.last_status}
+                </p>
+              )}
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button onClick={syncMail} disabled={mailBusy} className="btn-accent px-3 py-1.5 text-[13px]">
+                  {mailBusy ? "Checking…" : "Check now"}
+                </button>
+                <button onClick={() => setShowForm(true)} className="btn-ghost px-3 py-1.5 text-[13px]">
+                  Change
+                </button>
+                <button onClick={disconnectMail} className="btn-ghost px-3 py-1.5 text-[13px]">
+                  Disconnect
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="mt-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
+              Connect the mailbox that receives the manager&apos;s reports once,
+              and every new one is collected, read and filed automatically.
+              Works with one.com, Gmail, Outlook — anything with IMAP.
+            </p>
+          )}
+
+          {(showForm || !mail) && (
+            <div className="mt-3 grid gap-2">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                  Mail server
+                  <input
+                    className="input mt-1 text-[13px]"
+                    value={form.host}
+                    onChange={(e) => setForm({ ...form, host: e.target.value })}
+                    placeholder="imap.one.com"
+                  />
+                </label>
+                <label className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                  Port
+                  <input
+                    type="number"
+                    className="input mt-1 text-[13px]"
+                    value={form.port}
+                    onChange={(e) => setForm({ ...form, port: Number(e.target.value) })}
+                  />
+                </label>
+              </div>
+              <label className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                Email address
+                <input
+                  className="input mt-1 text-[13px]"
+                  autoComplete="off"
+                  value={form.username}
+                  onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  placeholder="reports@yourhotel.com"
+                />
+              </label>
+              <label className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                Password
+                <input
+                  type="password"
+                  className="input mt-1 text-[13px]"
+                  autoComplete="new-password"
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                />
+              </label>
+              <label className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                Only messages whose subject contains (optional)
+                <input
+                  className="input mt-1 text-[13px]"
+                  value={form.subjectFilter}
+                  onChange={(e) => setForm({ ...form, subjectFilter: e.target.value })}
+                  placeholder="Manager Report"
+                />
+              </label>
+              <button
+                onClick={connectMail}
+                disabled={mailBusy || !form.host || !form.username || !form.password}
+                className="btn-accent mt-1 px-4 py-2 text-[13px]"
+              >
+                {mailBusy ? "Connecting…" : "Connect mailbox"}
+              </button>
+              <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                The password is encrypted before it is stored and is only used to
+                read this mailbox. A dedicated or app-specific password is best.
+              </p>
+            </div>
+          )}
+
+          {mailMsg && (
+            <p className="mt-2 text-xs" style={{ color: "var(--text-secondary)" }}>
+              {mailMsg}
+            </p>
+          )}
         </div>
       </div>
 

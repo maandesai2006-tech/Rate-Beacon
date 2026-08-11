@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
 import { ingestReport } from "@/lib/report-ingest";
+import { pdfToText } from "@/lib/pdf";
 
 export const maxDuration = 60;
 
@@ -22,7 +23,22 @@ export async function POST(req: NextRequest) {
     const file = form.get("file");
     if (file && typeof file !== "string") {
       fileName = file.name;
-      text = await file.text();
+      const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+      if (isPdf) {
+        const out = await pdfToText(new Uint8Array(await file.arrayBuffer()));
+        if (!out.hasTextLayer) {
+          return NextResponse.json(
+            {
+              error:
+                "That PDF has no text layer — it is a scan or an image. Ask for the report as a text or CSV export, or paste its contents instead.",
+            },
+            { status: 422 }
+          );
+        }
+        text = out.text;
+      } else {
+        text = await file.text();
+      }
     }
     const pasted = form.get("text");
     if (typeof pasted === "string" && pasted.trim()) text = pasted;
