@@ -127,7 +127,33 @@ export async function GET() {
     detail: geo.ok ? `Responding in ${geo.ms}ms.` : `HTTP ${geo.status}. ${geo.body.slice(0, 160)}`,
   });
 
-  // 6. Coverage summary
+  // 6. Mail reader (runs outside Vercel, which cannot open IMAP sockets)
+  try {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const r = await timed(`${url}/functions/v1/mailbox-fetch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+        apikey: key ?? "",
+      },
+      body: JSON.stringify({ host: "", username: "", password: "" }),
+    });
+    // A 400 here means the function is deployed and validating input.
+    const reachable = r.status === 400 || r.status === 200 || r.status === 502;
+    checks.push({
+      name: "Mail reader",
+      ok: reachable,
+      detail: reachable
+        ? `Deployed and responding in ${r.ms}ms.`
+        : `Not reachable (HTTP ${r.status}). ${r.body.slice(0, 140)}`,
+    });
+  } catch (e) {
+    checks.push({ name: "Mail reader", ok: false, detail: (e as Error).message });
+  }
+
+  // 7. Coverage summary
   try {
     const [{ count: hotels }, { count: located }, { count: rated }, { count: places }] = await Promise.all([
       supa.from("hotels").select("hotel_id", { count: "exact", head: true }),

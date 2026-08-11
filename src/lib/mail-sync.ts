@@ -42,7 +42,7 @@ export async function syncMailbox(
         fromFilter: source.from_filter,
       },
       source.last_uid,
-      15
+      5
     );
 
     let filed = 0;
