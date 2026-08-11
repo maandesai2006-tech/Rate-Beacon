@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
 import { ingestReport } from "@/lib/report-ingest";
 import { pdfToText } from "@/lib/pdf";
+import { geminiConfigured } from "@/lib/gemini";
 
 export const maxDuration = 60;
 
@@ -18,6 +19,7 @@ export async function POST(req: NextRequest) {
   let fileName: string | undefined;
   let profileId: number | null = null;
   let hotelIdOverride: string | null = null;
+  let pdfBase64: string | null = null;
 
   if (form) {
     const file = form.get("file");
@@ -25,17 +27,21 @@ export async function POST(req: NextRequest) {
       fileName = file.name;
       const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
       if (isPdf) {
-        const out = await pdfToText(new Uint8Array(await file.arrayBuffer()));
-        if (!out.hasTextLayer) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        pdfBase64 = Buffer.from(bytes).toString("base64");
+        const out = await pdfToText(bytes).catch(() => null);
+        // A scan has no text layer. That is only fatal when the model is not
+        // configured to read the page image instead.
+        if (!out?.hasTextLayer && !geminiConfigured()) {
           return NextResponse.json(
             {
               error:
-                "That PDF has no text layer — it is a scan or an image. Ask for the report as a text or CSV export, or paste its contents instead.",
+                "That PDF has no text layer — it is a scan or an image. Set GEMINI_API_KEY so scans can be read, ask for the report as a text or CSV export, or paste its contents instead.",
             },
             { status: 422 }
           );
         }
-        text = out.text;
+        text = out?.text ?? "";
       } else {
         text = await file.text();
       }
@@ -57,7 +63,7 @@ export async function POST(req: NextRequest) {
     hotelIdOverride = body.hotelId ?? null;
   }
 
-  if (!text.trim()) {
+  if (!text.trim() && !pdfBase64) {
     return NextResponse.json({ error: "No report content found in that file" }, { status: 400 });
   }
 
@@ -76,6 +82,7 @@ export async function POST(req: NextRequest) {
     profileId: profile.id,
     text,
     fileName,
+    pdfBase64,
     source: "upload",
     hotelIdOverride,
   });

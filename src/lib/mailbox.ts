@@ -27,6 +27,8 @@ export interface FetchedReport {
   date: string | null;
   fileName: string | null;
   text: string;
+  /** First PDF attachment, kept whole so Gemini can read a scan the text layer cannot. */
+  pdfBase64: string | null;
   note?: string;
 }
 
@@ -119,21 +121,27 @@ export async function fetchReports(
     const pieces: string[] = [];
     let fileName: string | null = null;
     let note: string | undefined;
+    let pdfBase64: string | null = null;
 
     for (const att of parsed.attachments ?? []) {
       const name = att.filename ?? "attachment";
       const isPdf = att.contentType === "application/pdf" || /\.pdf$/i.test(name);
       if (isPdf) {
+        // Keep the bytes whatever the text layer looks like: a scan has no
+        // text to extract, but Gemini reads the page image directly.
+        if (!pdfBase64) {
+          pdfBase64 = att.content.toString("base64");
+          fileName = name;
+        }
         try {
           const out = await pdfToText(new Uint8Array(att.content));
           if (out.hasTextLayer) {
             pieces.push(out.text);
-            fileName = name;
           } else {
-            note = `${name} is a scan with no text layer, so nothing could be read from it.`;
+            note = `${name} is a scan with no text layer; read by the model rather than the text parser.`;
           }
         } catch (e) {
-          note = `${name} could not be read: ${(e as Error).message}`;
+          note = `${name} has no readable text layer (${(e as Error).message}); read by the model instead.`;
         }
       } else if (/\.(csv|tsv|txt|htm|html)$/i.test(name)) {
         pieces.push(att.content.toString("utf8"));
@@ -146,7 +154,8 @@ export async function fetchReports(
       if (body) pieces.push(typeof body === "string" ? body : String(body));
     }
     const text = pieces.join("\n\n").trim();
-    if (!text) continue;
+    // A scan yields no text but is still a usable report.
+    if (!text && !pdfBase64) continue;
 
     reports.push({
       uid: m.uid,
@@ -156,6 +165,7 @@ export async function fetchReports(
       date: parsed.date ? parsed.date.toISOString().slice(0, 10) : null,
       fileName,
       text,
+      pdfBase64,
       note,
     });
   }

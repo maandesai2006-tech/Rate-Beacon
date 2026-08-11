@@ -5,6 +5,7 @@ import { SupabaseClient } from "@supabase/supabase-js";
 import { extractMetrics, extractReportDate, matchHotel } from "./reports";
 import { todayISO } from "./dates";
 import { storeDailyReport, DAILY_METRIC_COLUMNS } from "./daily-reports";
+import { extractReport, geminiConfigured, DEFAULT_MODEL } from "./gemini";
 
 export interface IngestInput {
   profileId: number;
@@ -13,6 +14,8 @@ export interface IngestInput {
   fileName?: string;
   source: "upload" | "email";
   hotelIdOverride?: string | null;
+  /** Whole PDF, so the model can read a scan the text layer cannot. */
+  pdfBase64?: string | null;
 }
 
 export interface IngestResult {
@@ -39,12 +42,61 @@ export async function ingestReport(
     name: t.hotels?.name ?? t.hotel_id,
   }));
 
+  // Gemini reads the report when a key is set — it handles scans and the
+  // multi-column Today/MTD/YTD layouts the regex parser cannot. Without a key,
+  // or if the call fails, the regex parser still runs, so ingestion never
+  // depends on the model being reachable.
+  let wide: Partial<Record<(typeof DAILY_METRIC_COLUMNS)[number], number>> = {};
+  let reportDate = extractReportDate(input.text, todayISO());
+  let extractor = "text-parser";
+  let extractorModel: string | null = null;
+  let confidence: number | null = null;
+  let hotelNameHint = "";
+
+  if (geminiConfigured() && (input.pdfBase64 || input.text.trim())) {
+    try {
+      const g = await extractReport({
+        base64: input.pdfBase64 ?? undefined,
+        mimeType: input.pdfBase64 ? "application/pdf" : undefined,
+        fileName: input.fileName,
+        text: input.pdfBase64 ? undefined : input.text,
+        subject: input.subject,
+      });
+      for (const col of DAILY_METRIC_COLUMNS) {
+        const v = g[col as keyof typeof g];
+        if (typeof v === "number") wide[col] = v;
+      }
+      if (g.report_date) reportDate = g.report_date;
+      if (g.hotel_name) hotelNameHint = g.hotel_name;
+      extractor = "gemini";
+      extractorModel = DEFAULT_MODEL;
+      confidence = g.confidence;
+    } catch {
+      wide = {};
+    }
+  }
+
+  const metrics = extractMetrics(input.text);
+  if (extractor !== "gemini" || Object.keys(wide).length === 0) {
+    extractor = "text-parser";
+    extractorModel = null;
+    confidence = null;
+    wide = {};
+    for (const m of metrics) {
+      const col = m.metric === "occupancy" ? "occupancy_percent" : m.metric;
+      if ((DAILY_METRIC_COLUMNS as readonly string[]).includes(col)) {
+        wide[col as (typeof DAILY_METRIC_COLUMNS)[number]] = m.value;
+      }
+    }
+  }
+
   const match = input.hotelIdOverride
     ? { hotelId: input.hotelIdOverride, matchedBy: "chosen manually" }
-    : matchHotel(input.text, input.subject ?? "", candidates);
-
-  const reportDate = extractReportDate(input.text, todayISO());
-  const metrics = extractMetrics(input.text);
+    : matchHotel(
+        `${hotelNameHint}\n${input.text}`,
+        input.subject ?? "",
+        candidates
+      );
 
   if (!match) {
     return {
@@ -88,6 +140,7 @@ export async function ingestReport(
     };
   }
 
+  // The narrow store stays the raw record of what the text parser saw.
   if (metrics.length) {
     await supa.from("report_metrics").upsert(
       metrics.map((m) => ({
@@ -98,17 +151,13 @@ export async function ingestReport(
       })),
       { onConflict: "report_id,metric" }
     );
+  }
 
-    // Mirror into the normalised layer so a report collected over IMAP or by
-    // upload produces the same row, and the same fifteen flags, as one that
-    // arrived through the Cloudflare Worker.
-    const wide: Partial<Record<(typeof DAILY_METRIC_COLUMNS)[number], number>> = {};
-    for (const m of metrics) {
-      const col = m.metric === "occupancy" ? "occupancy_percent" : m.metric;
-      if ((DAILY_METRIC_COLUMNS as readonly string[]).includes(col)) {
-        wide[col as (typeof DAILY_METRIC_COLUMNS)[number]] = m.value;
-      }
-    }
+  // The normalised layer is what the dashboard and the fifteen rules read, so
+  // a report collected over IMAP or by upload lands exactly as one that came
+  // through the Cloudflare Worker.
+  const found = Object.keys(wide).length;
+  if (found) {
     try {
       await storeDailyReport(supa, {
         profileId: input.profileId,
@@ -116,7 +165,9 @@ export async function ingestReport(
         reportDate,
         metrics: wide,
         source: input.source,
-        extractor: "text-parser",
+        extractor,
+        extractorModel,
+        confidence,
         rawReportId: report.id,
       });
     } catch {
@@ -130,6 +181,6 @@ export async function ingestReport(
     hotelId: match.hotelId,
     matchedBy: match.matchedBy,
     reportDate,
-    metrics: metrics.length,
+    metrics: found,
   };
 }

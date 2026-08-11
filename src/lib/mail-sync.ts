@@ -53,6 +53,7 @@ export async function syncMailbox(
         text: r.text,
         subject: r.subject,
         fileName: r.fileName ?? undefined,
+        pdfBase64: r.pdfBase64,
         source: "email",
       });
       if (result.reportId) {
