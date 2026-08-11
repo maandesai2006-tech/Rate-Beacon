@@ -405,3 +405,17 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 500;
 }
 .rb-pin__star { font-size: 10px; }
+
+/* Weather playback: a temperature reading centred on each forecast cell.
+   Non-interactive, so it never blocks a click on a hotel pin underneath. */
+.rb-wx-wrap { background: none !important; border: 0 !important; }
+.rb-wx {
+  transform: translate(-50%, -50%);
+  font: 600 12px/1 var(--font-body);
+  color: var(--text-primary);
+  text-shadow:
+    0 1px 2px var(--surface),
+    0 0 6px var(--surface);
+  pointer-events: none;
+  white-space: nowrap;
+}
