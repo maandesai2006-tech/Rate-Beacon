@@ -31,10 +31,20 @@ export async function decryptSecret(stored: string): Promise<string> {
   const [ivPart, dataPart] = stored.split(".");
   if (!ivPart || !dataPart) throw new Error("Stored credential is malformed");
   const key = await keyFor();
-  const buf = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: b64.from(ivPart) },
-    key,
-    b64.from(dataPart)
-  );
-  return dec.decode(buf);
+  try {
+    const buf = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: b64.from(ivPart) },
+      key,
+      b64.from(dataPart)
+    );
+    return dec.decode(buf);
+  } catch {
+    // AES-GCM fails closed with an opaque WebCrypto OperationError ("The
+    // operation failed for an operation-specific reason"), which tells nobody
+    // anything. In practice there is only one cause: APP_SECRET is not the one
+    // this password was saved under.
+    throw new Error(
+      "The saved mailbox password cannot be read because APP_SECRET has changed since it was stored. Reconnect the mailbox to save the password again under the current APP_SECRET."
+    );
+  }
 }
