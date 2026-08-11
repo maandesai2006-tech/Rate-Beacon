@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
-import type { GridResponse, GridRow, HistoryPoint, Hotel, MapPlace, RankStat } from "@/lib/types";
+import type { Baseline, GridResponse, GridRow, HistoryPoint, Hotel, MapPlace, RankStat } from "@/lib/types";
 import Sparkline from "@/components/Sparkline";
 import ReportsPanel from "@/components/ReportsPanel";
 import dynamicImport from "next/dynamic";
@@ -512,39 +512,6 @@ export default function Dashboard() {
         </div>
       }
     >
-      {baselines.length > 1 && (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="kicker" style={{ color: "var(--text-muted)" }}>
-            My hotel
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {baselines.map((b) => (
-              <button
-                key={b.hotel_id}
-                onClick={() => setBaselineId(b.hotel_id)}
-                className="btn-ghost px-3 py-1.5 text-[12px]"
-                data-on={b.hotel_id === baselineId}
-                style={
-                  b.hotel_id === baselineId
-                    ? {
-                        borderColor: "var(--accent)",
-                        background: "var(--accent-soft)",
-                        color: "var(--accent)",
-                      }
-                    : undefined
-                }
-                title={`${b.compCount} competitors tracked for this hotel`}
-              >
-                {b.name}
-                <span className="ml-1.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-                  {b.compCount}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {refreshMsg && (
         <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>
           {refreshMsg}
@@ -620,6 +587,17 @@ export default function Dashboard() {
       {/* View tabs */}
       <TabBar tab={tab} onChange={setTab} />
 
+      {/* Which of your hotels this section is built around. Each rate view
+          carries its own copy so the choice is always in reach. */}
+      {tab !== "reports" && (
+        <FocusBar
+          baselines={baselines}
+          active={baselineId}
+          onChange={setBaselineId}
+        />
+      )}
+
+
       {tab === "grid" && (
         <div className="fade">
           <div
@@ -654,8 +632,23 @@ export default function Dashboard() {
                     <th
                       key={h.hotel_id}
                       className="th-label max-w-32 truncate px-3 py-2.5"
-                      style={{ borderBottom: "1px solid var(--border)" }}
-                      title={h.rating != null ? `${h.name} · ${h.rating.toFixed(1)} (${h.review_count ?? "–"})` : h.name}
+                      style={{
+                        borderBottom: "1px solid var(--border)",
+                        // Another of your own hotels in this compset: it
+                        // prices against you, but beating it is not a win.
+                        ...(h.is_portfolio
+                          ? {
+                              color: "var(--status-good)",
+                              background: "color-mix(in srgb, var(--status-good) 7%, transparent)",
+                            }
+                          : null),
+                      }}
+                      title={
+                        (h.is_portfolio ? "One of your hotels · " : "") +
+                        (h.rating != null
+                          ? `${h.name} · ${h.rating.toFixed(1)} (${h.review_count ?? "–"})`
+                          : h.name)
+                      }
                     >
                       <a
                         href={tripAdvisorUrl(h.hotel_id)}
@@ -839,6 +832,60 @@ function Shell({
       {header ?? <h1 className="text-xl font-semibold">Rate Beacon</h1>}
       {children}
     </main>
+  );
+}
+
+
+// The hotel a rate view is built around. Sits inside each section rather than
+// once at the top of the page, so it is reachable without scrolling back up,
+// and sticks under the app header while the grid scrolls.
+function FocusBar({
+  baselines,
+  active,
+  onChange,
+}: {
+  baselines: Baseline[];
+  active: string | null;
+  onChange: (id: string) => void;
+}) {
+  if (baselines.length < 2) return null;
+  return (
+    <div
+      className="sticky z-20 -mx-1 mt-4 flex flex-wrap items-center gap-1.5 px-1 py-2.5"
+      style={{
+        top: 64,
+        background: "color-mix(in srgb, var(--page) 88%, transparent)",
+        backdropFilter: "blur(8px)",
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      <span className="kicker mr-1" style={{ color: "var(--text-muted)" }}>
+        Focus
+      </span>
+      {baselines.map((b) => (
+        <button
+          key={b.hotel_id}
+          onClick={() => onChange(b.hotel_id)}
+          className="btn-ghost px-3 py-1.5 text-[12px]"
+          data-on={b.hotel_id === active}
+          style={
+            b.hotel_id === active
+              ? {
+                  borderColor: "var(--accent)",
+                  background: "var(--accent-soft)",
+                  color: "var(--accent)",
+                }
+              : undefined
+          }
+          title={`${b.compCount} competitors tracked for this hotel`}
+        >
+          {b.name}
+          <span className="ml-1.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            {b.compCount}
+          </span>
+        </button>
+      ))}
+    </div>
   );
 }
 

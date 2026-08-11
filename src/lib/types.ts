@@ -16,7 +16,14 @@ export interface Profile {
 export interface Hotel {
   hotel_id: string;
   name: string;
+  /** The baseline this grid is built around — exactly one per grid. */
   is_mine: boolean;
+  /**
+   * Another hotel the same operator owns, showing up inside this hotel's
+   * competitive set. It competes on rate like any other, but it is not really
+   * a rival, so the grid tints it apart from the true competitors.
+   */
+  is_portfolio?: boolean;
   rating: number | null;
   review_count: number | null;
   latitude: number | null;

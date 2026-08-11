@@ -143,13 +143,17 @@ async function buildGrid(
   const compsAreDiscovered = (compsByBaseline.get(activeBaselineId ?? "")?.length ?? 0) > 0;
 
   const byId = new Map(allTracked.map((h) => [h.hotel_id, h]));
+  // Which of the columns are hotels this operator also owns. is_mine stays
+  // reserved for the single baseline the grid's arithmetic is built around,
+  // so the fact is carried separately rather than overloaded onto it.
+  const ownedIds = new Set(baselines.map((b) => b.hotel_id));
   const hotels: Hotel[] = [
     ...(activeBaselineId && byId.has(activeBaselineId)
-      ? [{ ...(byId.get(activeBaselineId) as Hotel), is_mine: true }]
+      ? [{ ...(byId.get(activeBaselineId) as Hotel), is_mine: true, is_portfolio: false }]
       : []),
     ...allTracked
       .filter((h) => compIdSet.has(h.hotel_id) && h.hotel_id !== activeBaselineId)
-      .map((h) => ({ ...h, is_mine: false })),
+      .map((h) => ({ ...h, is_mine: false, is_portfolio: ownedIds.has(h.hotel_id) })),
   ];
 
   // Map context: located hotels in the profile that aren't in the grid. They
