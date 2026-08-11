@@ -65,7 +65,13 @@ interface TooltipState {
   lines: string[];
 }
 
-type Tab = "grid" | "trends" | "ladder" | "map" | "ratings" | "reports";
+type Tab = "grid" | "trends" | "ladder" | "map" | "reports";
+
+const TAB_STORAGE_KEY = "rb-tab";
+
+function isTab(v: string | null): v is Tab {
+  return v === "grid" || v === "trends" || v === "ladder" || v === "map" || v === "reports";
+}
 type Theme = "light" | "dark";
 
 export default function Dashboard() {
@@ -75,11 +81,20 @@ export default function Dashboard() {
   const [theme, setTheme] = useState<Theme>("light");
   const [data, setData] = useState<GridPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("grid");
+  // The tab is a property of the app, not of the hotel being viewed, so it
+  // survives switching hotels and reloading the page.
+  const [tab, setTabState] = useState<Tab>("grid");
+  const setTab = useCallback((next: Tab) => {
+    setTabState(next);
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, next);
+    } catch {
+      // Private browsing with storage denied — the tab just will not persist.
+    }
+  }, []);
   const [refreshing, setRefreshing] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [mapping, setMapping] = useState(false);
-  const [ratingsBusy, setRatingsBusy] = useState(false);
   const [checks, setChecks] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
@@ -95,9 +110,17 @@ export default function Dashboard() {
   const [gridScrolled, setGridScrolled] = useState(false);
 
   // Theme: explicit light/dark stamp on <html>, or follow the OS.
+  // The last-viewed tab is restored here too, so switching hotels or
+  // reloading never drops you back on the rate grid.
   useEffect(() => {
     const saved = localStorage.getItem("rb-theme") as Theme | null;
     if (saved === "light" || saved === "dark") setTheme(saved);
+    try {
+      const savedTab = localStorage.getItem(TAB_STORAGE_KEY);
+      if (isTab(savedTab)) setTabState(savedTab);
+    } catch {
+      // Storage denied; the default tab stands.
+    }
   }, []);
   useEffect(() => {
     const root = document.documentElement;
@@ -181,7 +204,6 @@ export default function Dashboard() {
   // If the map has no coordinates yet, place them in the background so the
   // map is populated the next time it is opened — no manual step.
   const mapFillStarted = useRef(false);
-  const ratingsFillStarted = useRef(false);
   useEffect(() => {
     if (mapFillStarted.current || !data || !data.configured) return;
     const anyLocated = [...data.hotels, ...(data.mapHotels ?? [])].some(
@@ -193,30 +215,6 @@ export default function Dashboard() {
   }, [data, fillMap]);
 
 
-
-  // Fill in review scores, looping until the server reports none pending.
-  const fillRatings = useCallback(async () => {
-    setRatingsBusy(true);
-    try {
-      for (let guard = 0; guard < 8; guard++) {
-        const res = await fetch("/api/ratings?limit=25", { method: "POST" });
-        if (!res.ok) break;
-        const j = (await res.json()) as { remaining?: number; updated?: number };
-        if (!j.remaining || !j.updated) break;
-      }
-      await load();
-    } finally {
-      setRatingsBusy(false);
-    }
-  }, [load]);
-
-  useEffect(() => {
-    if (tab !== "ratings" || ratingsFillStarted.current) return;
-    if (!data || !data.configured) return;
-    if (data.hotels.some((h) => h.rating != null)) return;
-    ratingsFillStarted.current = true;
-    fillRatings().catch(() => {});
-  }, [tab, data, fillRatings]);
 
   // The server can only work for ~60s at a time, so the refresh is driven
   // from here in chunks until the run reports it is finished.
@@ -748,22 +746,11 @@ export default function Dashboard() {
         </div>
       )}
 
-      {tab === "ratings" && (
-        <div className="card rise mt-4 p-5">
-          <RatingsTable
-            hotels={hotels}
-            rows={rows}
-            fmt={fmt}
-            busy={ratingsBusy}
-            onFetch={fillRatings}
-          />
-        </div>
-      )}
-
+      {/* Reports stand apart from the rate views: they belong to a hotel you
+          own, not to whichever compset is on screen, so the panel carries its
+          own focus picker over your own hotels. */}
       {tab === "reports" && (
-        <div className="card rise mt-4 p-5">
-          <ReportsPanel profileId={profileId} hotels={hotels} />
-        </div>
+        <ReportsPanel profileId={profileId} hotels={baselines} />
       )}
 
       {tab === "map" && (
@@ -862,7 +849,6 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
     ["trends", "Trends"],
     ["ladder", "Rate ladder"],
     ["map", "Map"],
-    ["ratings", "Ratings"],
     ["reports", "Manager reports"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
@@ -947,177 +933,6 @@ function RankInsight({ stat, live }: { stat?: RankStat; live: boolean }) {
         {avgRank30 != null ? `#${avgRank30.toFixed(1)}` : "—"}
       </span>
     </span>
-  );
-}
-
-// Review standing across the compset. TripAdvisor is the only source in the
-// free feed, so that is what is shown — rating, review volume and rank —
-// alongside price position, which is where the two often disagree.
-function RatingsTable({
-  hotels,
-  rows,
-  fmt,
-  busy,
-  onFetch,
-}: {
-  hotels: Hotel[];
-  rows: GridRow[];
-  fmt: (n: number) => string;
-  busy: boolean;
-  onFetch: () => void;
-}) {
-  const rated = hotels.filter((h) => h.rating != null);
-  // Average price over the horizon, for the value comparison.
-  const avgPrice = new Map<string, number>();
-  for (const h of hotels) {
-    const vals = rows
-      .map((r) => (h.is_mine ? r.myPrice ?? r.cells[h.hotel_id]?.price : r.cells[h.hotel_id]?.price))
-      .filter((v): v is number => v != null);
-    if (vals.length) avgPrice.set(h.hotel_id, vals.reduce((a, b) => a + b, 0) / vals.length);
-  }
-
-  if (rated.length === 0) {
-    return (
-      <div>
-        <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
-          {busy ? "Looking up review scores…" : "No review scores collected yet."}
-        </p>
-        <p className="mt-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-          Scores are gathered from TripAdvisor&apos;s public data. If this stays
-          empty, that source is not returning hotel records right now — run the
-          system check at the bottom of the page to see which feeds are up.
-        </p>
-        <button
-          onClick={onFetch}
-          disabled={busy}
-          className="btn-ghost mt-3 px-3 py-1.5 text-[13px]"
-        >
-          {busy ? "Fetching…" : "Fetch review scores"}
-        </button>
-      </div>
-    );
-  }
-
-  const byRating = [...rated].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
-  const byPrice = [...hotels]
-    .filter((h) => avgPrice.has(h.hotel_id))
-    .sort((a, b) => (avgPrice.get(b.hotel_id) ?? 0) - (avgPrice.get(a.hotel_id) ?? 0));
-  const priceRank = new Map(byPrice.map((h, i) => [h.hotel_id, i + 1]));
-  const maxReviews = Math.max(1, ...rated.map((h) => h.review_count ?? 0));
-
-  return (
-    <div>
-      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-        TripAdvisor rating and review volume across the competitive set, next to
-        each hotel&apos;s price position. A hotel rated above the set but priced
-        below it is leaving room; the reverse is a risk.
-      </p>
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[640px] border-collapse text-[13px]">
-          <thead>
-            <tr className="text-left">
-              {["#", "Hotel", "Rating", "Reviews", "Avg rate", "Price rank"].map((h, i) => (
-                <th
-                  key={h}
-                  className={`th-label px-3 py-2.5 ${i >= 2 ? "text-right" : ""}`}
-                  style={{ borderBottom: "1px solid var(--border)" }}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {byRating.map((h, i) => {
-              const pRank = priceRank.get(h.hotel_id) ?? null;
-              const rRank = i + 1;
-              // Rated better than priced → room to move up.
-              const gap = pRank != null ? pRank - rRank : null;
-              return (
-                <tr
-                  key={h.hotel_id}
-                  className="row-hover border-t"
-                  style={{ borderColor: "var(--gridline)" }}
-                >
-                  <td className="px-3 py-2 tabular-nums" style={{ color: "var(--text-muted)" }}>
-                    {rRank}
-                  </td>
-                  <td className="max-w-[280px] truncate px-3 py-2">
-                    <a
-                      href={tripAdvisorUrl(h.hotel_id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:underline"
-                      style={{
-                        color: h.is_mine ? "var(--accent)" : "inherit",
-                        fontWeight: h.is_mine ? 700 : 400,
-                      }}
-                    >
-                      {h.name}
-                    </a>
-                  </td>
-                  <td className="px-3 py-2 text-right font-semibold tabular-nums">
-                    {h.rating?.toFixed(1)}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    <span className="inline-flex items-center justify-end gap-2">
-                      <span
-                        className="inline-block h-1.5"
-                        style={{
-                          width: `${Math.max(4, ((h.review_count ?? 0) / maxReviews) * 56)}px`,
-                          background: "var(--series-1)",
-                        }}
-                      />
-                      <span style={{ color: "var(--text-secondary)" }}>
-                        {h.review_count ?? "—"}
-                      </span>
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {avgPrice.has(h.hotel_id) ? fmt(avgPrice.get(h.hotel_id) as number) : "—"}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {pRank != null ? (
-                      <span
-                        title={
-                          gap === null || gap === 0
-                            ? "Priced in line with its review standing"
-                            : gap > 0
-                            ? `Rated ${gap} place(s) better than it is priced`
-                            : `Priced ${Math.abs(gap)} place(s) above its review standing`
-                        }
-                        style={{
-                          color:
-                            gap == null || gap === 0
-                              ? "var(--text-secondary)"
-                              : gap > 0
-                              ? "var(--delta-good-text)"
-                              : "var(--status-critical)",
-                        }}
-                      >
-                        #{pRank}
-                        {gap != null && gap !== 0 && (
-                          <span className="ml-1 text-[11px]">
-                            ({gap > 0 ? "+" : ""}
-                            {gap})
-                          </span>
-                        )}
-                      </span>
-                    ) : (
-                      <span style={{ color: "var(--text-muted)" }}>—</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="mt-3 text-xs" style={{ color: "var(--text-muted)" }}>
-        Ratings are TripAdvisor&apos;s. Expedia and Booking.com scores are not
-        available in the free feed this dashboard runs on.
-      </p>
-    </div>
   );
 }
 

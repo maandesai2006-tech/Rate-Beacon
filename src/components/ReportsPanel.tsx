@@ -1,29 +1,69 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { TrendLine, WeekdayBars } from "./ReportCharts";
+
+type Severity = "critical" | "warning" | "info" | "positive";
 
 interface Insight {
-  id: string;
-  title: string;
-  value: string;
-  detail: string;
-  direction: "good" | "bad" | "neutral";
+  flag_type: string;
+  message: string;
+  severity: Severity;
+  metric_key: string | null;
+  observed: number | null;
+  threshold: number | null;
 }
+
+/** One night, as stored in daily_manager_reports. */
+type Point = { date: string } & Record<string, number | null | string>;
 
 interface ReportHotel {
   hotelId: string;
   name: string;
   reportCount: number;
+  firstDate: string | null;
   latestDate: string | null;
-  points: { date: string; metrics: Record<string, number> }[];
+  extractor: string | null;
+  confidence: number | null;
+  points: Point[];
   insights: Insight[];
 }
 
-const TONE: Record<Insight["direction"], string> = {
-  good: "var(--delta-good-text)",
-  bad: "var(--status-critical)",
-  neutral: "var(--text-secondary)",
+const SEVERITY_ORDER: Record<Severity, number> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+  positive: 3,
 };
+
+const SEVERITY_STYLE: Record<Severity, { label: string; color: string }> = {
+  critical: { label: "Critical", color: "var(--status-critical)" },
+  warning: { label: "Warning", color: "var(--status-warning)" },
+  info: { label: "Note", color: "var(--accent)" },
+  positive: { label: "Positive", color: "var(--status-good)" },
+};
+
+const money = (n: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: n >= 1000 ? 0 : 2,
+  }).format(n);
+const moneyAxis = (n: number) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+const percent = (n: number) => `${n.toFixed(1)}%`;
+const percentAxis = (n: number) => `${n.toFixed(0)}%`;
+
+function num(p: Point, key: string): number | null {
+  const v = p[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function seriesOf(points: Point[], key: string) {
+  return points
+    .map((p) => ({ date: p.date, value: num(p, key) }))
+    .filter((s): s is { date: string; value: number } => s.value != null);
+}
 
 export default function ReportsPanel({
   profileId,
@@ -33,7 +73,9 @@ export default function ReportsPanel({
   hotels: { hotel_id: string; name: string }[];
 }) {
   const [data, setData] = useState<{ inboxToken: string; hotels: ReportHotel[] } | null>(null);
-  const [active, setActive] = useState<string | null>(null);
+  // null means "all my hotels" — the overview across every property
+  // holding reports, which is what the tab opens on.
+  const [focus, setFocus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [pickHotel, setPickHotel] = useState("");
@@ -66,7 +108,7 @@ export default function ReportsPanel({
     if (!res.ok) return;
     const j = await res.json();
     setData(j);
-    setActive((cur) => cur ?? j.hotels?.[0]?.hotelId ?? null);
+    // Deliberately not auto-selecting a hotel: the overview comes first.
   }, [profileId]);
 
   const loadMail = useCallback(async () => {
@@ -176,12 +218,12 @@ export default function ReportsPanel({
     }
   }
 
-  const current = data?.hotels.find((h) => h.hotelId === active) ?? null;
+  const current = data?.hotels.find((h) => h.hotelId === focus) ?? null;
 
   return (
     <div>
       {/* Ingestion */}
-      <div className="flex flex-wrap items-start gap-4">
+      <div className="card rise mt-4 flex flex-wrap items-start gap-4 p-5">
         <div className="min-w-[260px] flex-1">
           <div className="kicker">Add a report</div>
           <p className="mt-1.5 text-xs" style={{ color: "var(--text-secondary)" }}>
@@ -337,143 +379,380 @@ export default function ReportsPanel({
         </div>
       </div>
 
-      {/* Hotels holding reports */}
+      {/* Visuals and analyses. The focus picker floats above them so the
+          hotel can be changed without scrolling back up. */}
       {data && data.hotels.length > 0 ? (
         <>
-          <div className="mt-6 flex flex-wrap gap-1.5">
-            {data.hotels.map((h) => (
-              <button
-                key={h.hotelId}
-                onClick={() => setActive(h.hotelId)}
-                className="btn-ghost px-3 py-1.5 text-[12px]"
-                style={
-                  h.hotelId === active
-                    ? {
-                        borderColor: "var(--accent)",
-                        background: "var(--accent-soft)",
-                        color: "var(--accent)",
-                      }
-                    : undefined
-                }
-              >
-                {h.name}
-                <span className="ml-1.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-                  {h.reportCount}
-                </span>
-              </button>
-            ))}
-          </div>
+          <FocusHeader
+            hotels={data.hotels}
+            focus={focus}
+            onChange={setFocus}
+          />
 
-          {current && (
-            <>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {current.insights.map((i) => (
-                  <div key={i.id} className="card p-4">
-                    <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                      {i.title}
-                    </div>
-                    <div
-                      className="mt-1 tabular-nums"
-                      style={{ font: "600 24px/1.1 var(--font-heading)", color: TONE[i.direction] }}
-                    >
-                      {i.value}
-                    </div>
-                    <p className="mt-1.5 text-xs leading-snug" style={{ color: "var(--text-secondary)" }}>
-                      {i.detail}
-                    </p>
-                  </div>
-                ))}
-              </div>
-
-              <MetricChart points={current.points} />
-            </>
+          {current ? (
+            <HotelReport hotel={current} />
+          ) : (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {data.hotels.map((h) => (
+                <HotelSummary key={h.hotelId} hotel={h} onOpen={() => setFocus(h.hotelId)} />
+              ))}
+            </div>
           )}
         </>
       ) : (
         <p className="mt-6 text-sm" style={{ color: "var(--text-muted)" }}>
-          No manager&apos;s reports yet. Upload one to see the analysis.
+          No manager&apos;s reports yet. Upload one, or connect the mailbox, to
+          see the analysis.
         </p>
       )}
     </div>
   );
 }
 
-// Occupancy, ADR and RevPAR over the reported history.
-function MetricChart({ points }: { points: { date: string; metrics: Record<string, number> }[] }) {
-  const [metric, setMetric] = useState<"revpar" | "adr" | "occupancy">("revpar");
-  const series = points
-    .filter((p) => p.metrics[metric] != null)
-    .map((p) => ({ date: p.date, value: p.metrics[metric] }));
-
-  if (series.length < 2) {
-    return (
-      <p className="mt-5 text-xs" style={{ color: "var(--text-muted)" }}>
-        Two or more reports are needed to chart a trend.
-      </p>
-    );
-  }
-
-  const W = 900;
-  const H = 240;
-  const padL = 52;
-  const padB = 28;
-  const padT = 14;
-  const values = series.map((s) => s.value);
-  const lo = Math.min(...values) * 0.92;
-  const hi = Math.max(...values) * 1.08;
-  const x = (i: number) => padL + (i / (series.length - 1)) * (W - padL - 14);
-  const y = (v: number) => H - padB - ((v - lo) / (hi - lo || 1)) * (H - padT - padB);
-  const d = series.map((s, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(s.value).toFixed(1)}`).join(" ");
-  const fmtY = (v: number) =>
-    metric === "occupancy"
-      ? `${v.toFixed(0)}%`
-      : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v);
+// ── Focus picker ──────────────────────────────────────────────────────────
+// Sticks below the app header so the hotel can be changed at any scroll
+// position. "All hotels" is a real choice, not an empty state: it is the
+// overview across every property holding reports.
+function FocusHeader({
+  hotels,
+  focus,
+  onChange,
+}: {
+  hotels: ReportHotel[];
+  focus: string | null;
+  onChange: (id: string | null) => void;
+}) {
+  const chip = (on: boolean) =>
+    on
+      ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
+      : undefined;
 
   return (
-    <div className="mt-6">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {(["revpar", "adr", "occupancy"] as const).map((m) => (
-          <button
-            key={m}
-            onClick={() => setMetric(m)}
-            className="btn-ghost px-3 py-1 text-[12px]"
-            style={
-              m === metric
-                ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
-                : undefined
-            }
+    <div
+      className="sticky z-20 -mx-1 mt-6 flex flex-wrap items-center gap-1.5 px-1 py-2.5"
+      style={{
+        top: 64,
+        background: "color-mix(in srgb, var(--page) 88%, transparent)",
+        backdropFilter: "blur(8px)",
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      <span className="kicker mr-1" style={{ color: "var(--text-muted)" }}>
+        Focus
+      </span>
+      <button
+        onClick={() => onChange(null)}
+        className="btn-ghost px-3 py-1.5 text-[12px]"
+        style={chip(focus == null)}
+      >
+        All hotels
+      </button>
+      {hotels.map((h) => (
+        <button
+          key={h.hotelId}
+          onClick={() => onChange(h.hotelId)}
+          className="btn-ghost px-3 py-1.5 text-[12px]"
+          style={chip(h.hotelId === focus)}
+          title={`${h.reportCount} report${h.reportCount === 1 ? "" : "s"} held`}
+        >
+          {h.name}
+          <span className="ml-1.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            {h.reportCount}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Overview card, one per hotel ──────────────────────────────────────────
+function HotelSummary({ hotel, onOpen }: { hotel: ReportHotel; onOpen: () => void }) {
+  const latest = hotel.points[hotel.points.length - 1] ?? null;
+  const prior = hotel.points[hotel.points.length - 2] ?? null;
+  const counts = hotel.insights.reduce<Record<Severity, number>>(
+    (acc, i) => ({ ...acc, [i.severity]: (acc[i.severity] ?? 0) + 1 }),
+    { critical: 0, warning: 0, info: 0, positive: 0 }
+  );
+
+  const delta = (key: string): number | null => {
+    const a = latest ? num(latest, key) : null;
+    const b = prior ? num(prior, key) : null;
+    if (a == null || b == null || b === 0) return null;
+    return ((a - b) / b) * 100;
+  };
+
+  const kpi = (label: string, key: string, fmt: (n: number) => string) => {
+    const v = latest ? num(latest, key) : null;
+    const d = delta(key);
+    return (
+      <div>
+        <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+          {label}
+        </div>
+        <div
+          className="tabular-nums"
+          style={{ font: "600 20px/1.15 var(--font-heading)", color: v == null ? "var(--text-muted)" : "var(--text-primary)" }}
+        >
+          {v == null ? "—" : fmt(v)}
+        </div>
+        {d != null && (
+          <div
+            className="text-[11px] tabular-nums"
+            style={{ color: d >= 0 ? "var(--status-good)" : "var(--status-critical)" }}
           >
-            {m === "revpar" ? "RevPAR" : m === "adr" ? "ADR" : "Occupancy"}
-          </button>
-        ))}
+            {d >= 0 ? "+" : ""}
+            {d.toFixed(1)}%
+          </div>
+        )}
       </div>
-      <div className="mt-3 overflow-x-auto">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[560px]" role="img" aria-label={`${metric} across reported days`}>
-          {[0, 1, 2, 3].map((k) => {
-            const v = lo + ((k + 1) / 4) * (hi - lo);
-            return (
-              <g key={k}>
-                <line x1={padL} y1={y(v)} x2={W - 14} y2={y(v)} stroke="var(--gridline)" strokeWidth="1" />
-                <text x={padL - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">
-                  {fmtY(v)}
-                </text>
-              </g>
-            );
-          })}
-          <path d={d} fill="none" stroke="var(--accent)" strokeWidth="2.5" />
-          {series.map((s, i) => (
-            <circle key={s.date} cx={x(i)} cy={y(s.value)} r="3.5" fill="var(--accent)">
-              <title>{`${s.date}: ${fmtY(s.value)}`}</title>
-            </circle>
+    );
+  };
+
+  return (
+    <button
+      onClick={onOpen}
+      className="card card--lift p-4 text-left"
+      style={{ display: "block", width: "100%" }}
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+          {hotel.name}
+        </span>
+        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {hotel.latestDate ?? "no reports"}
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-3">
+        {kpi("Occupancy", "occupancy_percent", percent)}
+        {kpi("ADR", "adr", money)}
+        {kpi("RevPAR", "revpar", money)}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+        {(["critical", "warning", "info", "positive"] as Severity[])
+          .filter((s) => counts[s] > 0)
+          .map((s) => (
+            <span key={s} className="inline-flex items-center gap-1">
+              <span
+                className="inline-block h-2 w-2 rounded-full"
+                style={{ background: SEVERITY_STYLE[s].color }}
+                aria-hidden
+              />
+              <span style={{ color: "var(--text-secondary)" }}>
+                {counts[s]} {SEVERITY_STYLE[s].label.toLowerCase()}
+              </span>
+            </span>
           ))}
-          {series.map((s, i) =>
-            i % Math.max(1, Math.round(series.length / 8)) === 0 ? (
-              <text key={`x${s.date}`} x={x(i)} y={H - 8} textAnchor="middle" fontSize="11" fill="var(--text-muted)">
-                {s.date.slice(5)}
-              </text>
-            ) : null
+        {hotel.insights.length === 0 && (
+          <span style={{ color: "var(--text-muted)" }}>Nothing flagged</span>
+        )}
+        <span className="ml-auto" style={{ color: "var(--accent)" }}>
+          Open
+        </span>
+      </div>
+    </button>
+  );
+}
+
+// ── One hotel in full ─────────────────────────────────────────────────────
+function HotelReport({ hotel }: { hotel: ReportHotel }) {
+  const points = hotel.points;
+  const latest = points[points.length - 1] ?? null;
+  const prior = points[points.length - 2] ?? null;
+
+  const insights = useMemo(
+    () => [...hotel.insights].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]),
+    [hotel.insights]
+  );
+
+  // RevPAR by weekday, averaged across everything held. Magnitude by
+  // category, so bars rather than a line.
+  const weekday = useMemo(() => {
+    const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const buckets = new Map<number, number[]>();
+    for (const p of points) {
+      const v = num(p, "revpar");
+      if (v == null) continue;
+      const d = new Date(`${p.date}T00:00:00Z`).getUTCDay();
+      buckets.set(d, [...(buckets.get(d) ?? []), v]);
+    }
+    return [1, 2, 3, 4, 5, 6, 0].map((d) => {
+      const vals = buckets.get(d) ?? [];
+      return {
+        label: names[d],
+        value: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+      };
+    });
+  }, [points]);
+
+  const delta = (key: string): number | null => {
+    const a = latest ? num(latest, key) : null;
+    const b = prior ? num(prior, key) : null;
+    if (a == null || b == null || b === 0) return null;
+    return ((a - b) / b) * 100;
+  };
+
+  const Kpi = ({ label, metric: k, fmt, note }: { label: string; metric: string; fmt: (n: number) => string; note?: string }) => {
+    const v = latest ? num(latest, k) : null;
+    const d = delta(k);
+    return (
+      <div className="card p-4">
+        <div className="kicker">{label}</div>
+        <div
+          className="mt-1.5 tabular-nums"
+          style={{ font: "600 28px/1.1 var(--font-heading)", color: v == null ? "var(--text-muted)" : "var(--text-primary)" }}
+        >
+          {v == null ? "—" : fmt(v)}
+        </div>
+        <div className="mt-1 flex flex-wrap items-baseline gap-2 text-xs">
+          {d != null && (
+            <span
+              className="tabular-nums font-medium"
+              style={{ color: d >= 0 ? "var(--status-good)" : "var(--status-critical)" }}
+            >
+              {d >= 0 ? "+" : ""}
+              {d.toFixed(1)}% vs previous
+            </span>
           )}
-        </svg>
+          {note && <span style={{ color: "var(--text-muted)" }}>{note}</span>}
+        </div>
+      </div>
+    );
+  };
+
+  const soldNote =
+    latest && num(latest, "rooms_sold") != null && num(latest, "rooms_available") != null
+      ? `${num(latest, "rooms_sold")} of ${num(latest, "rooms_available")} rooms`
+      : undefined;
+
+  return (
+    <div className="mt-4">
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-base font-semibold" style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}>
+          {hotel.name}
+        </h3>
+        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+          {hotel.reportCount} report{hotel.reportCount === 1 ? "" : "s"}
+          {hotel.firstDate && hotel.latestDate ? `, ${hotel.firstDate} to ${hotel.latestDate}` : ""}
+          {hotel.extractor ? ` · read by ${hotel.extractor}` : ""}
+        </span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi label="Occupancy" metric="occupancy_percent" fmt={percent} note={soldNote} />
+        <Kpi label="ADR" metric="adr" fmt={money} note="Average daily rate" />
+        <Kpi label="RevPAR" metric="revpar" fmt={money} note="Revenue per available room" />
+      </div>
+
+      {/* Three measures on two different scales, so three charts. Putting
+          occupancy and money on one pair of axes would invite reading the
+          crossings as meaning something. */}
+      <div className="card mt-4 grid gap-6 p-5 lg:grid-cols-2">
+        <TrendLine title="Occupancy" points={seriesOf(points, "occupancy_percent")} format={percentAxis} />
+        <TrendLine title="ADR" points={seriesOf(points, "adr")} format={moneyAxis} />
+        <TrendLine title="RevPAR" points={seriesOf(points, "revpar")} format={moneyAxis} />
+        <TrendLine title="Room revenue" points={seriesOf(points, "room_revenue")} format={moneyAxis} zeroBased />
+      </div>
+
+      <div className="card mt-4 p-5">
+        <WeekdayBars title="Average RevPAR by weekday" data={weekday} format={moneyAxis} />
+      </div>
+
+      <div className="mt-6">
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h4 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+            Daily insights &amp; manager&rsquo;s report analysis
+          </h4>
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+            {insights.length} of 15 checks flagged for {hotel.latestDate}
+          </span>
+        </div>
+        {insights.length === 0 ? (
+          <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+            All fifteen checks passed, or their inputs were not on this report.
+          </p>
+        ) : (
+          <ul className="space-y-2.5">
+            {insights.map((f) => {
+              const style = SEVERITY_STYLE[f.severity] ?? SEVERITY_STYLE.info;
+              return (
+                <li
+                  key={f.flag_type}
+                  className="card p-4"
+                  style={{ borderLeft: `3px solid ${style.color}` }}
+                >
+                  <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span
+                      className="text-[11px] font-semibold uppercase tracking-[0.08em]"
+                      style={{ color: style.color }}
+                    >
+                      {style.label}
+                    </span>
+                    <span className="text-[11px] uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+                      {f.flag_type.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  <p className="text-sm leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                    {f.message}
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <div className="card mt-6 overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border)" }}>
+              {["Date", "Occupancy", "ADR", "RevPAR", "Room revenue", "Rooms sold"].map((h, i) => (
+                <th
+                  key={h}
+                  className={`px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] ${i === 0 ? "text-left" : "text-right"}`}
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...points].reverse().slice(0, 30).map((p) => (
+              <tr key={p.date} style={{ borderTop: "1px solid var(--gridline)" }}>
+                <td className="px-4 py-2" style={{ color: "var(--text-primary)" }}>
+                  {p.date}
+                </td>
+                {(
+                  [
+                    ["occupancy_percent", percent],
+                    ["adr", money],
+                    ["revpar", money],
+                    ["room_revenue", money],
+                  ] as const
+                ).map(([k, fmt]) => {
+                  const v = num(p, k);
+                  return (
+                    <td
+                      key={k}
+                      className="px-4 py-2 text-right tabular-nums"
+                      style={{ color: v == null ? "var(--text-muted)" : "var(--text-secondary)" }}
+                    >
+                      {v == null ? "—" : fmt(v)}
+                    </td>
+                  );
+                })}
+                <td
+                  className="px-4 py-2 text-right tabular-nums"
+                  style={{ color: num(p, "rooms_sold") == null ? "var(--text-muted)" : "var(--text-secondary)" }}
+                >
+                  {num(p, "rooms_sold") ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
