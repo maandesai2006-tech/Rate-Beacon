@@ -1,0 +1,125 @@
+Candlewood Suites Pensacola - University Area
+PNCPE
+Date: Aug 10, 2026
+Report run date: Aug 11, 2026
+Report run time: 05:05:13
+User: Desai Mukesh
+General Manager Report
+Statistics
+Type Actual Today M-T-D Y-T-D Last Year Actual Today LY-M-T-D LY-T-D
+Total Rooms 95 950 21,090 0 0 0
+Available Rooms 22 166 2,521 0 0 0
+Rooms Occupied 73 779 18,355 0 0 0
+Same Day Checkouts 0 0 9 0 0 0
+Zero Rate Rooms 0 0 26 0 0 0
+OOO Rooms 0 5 214 0 0 0
+OOS Rooms 0 2 11 0 0 0
+Number of Arrivals 31 299 5,773 0 0 0
+Number of Arrival Guests 48 499 8,984 0 0 0
+Number Of Departures 28 321 5,747 0 0 0
+No Show Reservations 0 0 2 0 0 0
+Early Departures 1 10 350 0 0 0
+Extended Departures 1 15 373 0 0 0
+Total In House Guests 106 1,178 26,889 0 0 0
+Adults In House 104 1,141 25,920 0 0 0
+Children In House 2 37 969 0 0 0
+Transient In House Guests 106 1,175 25,579 0 0 0
+Group In House Guests 0 3 1,310 0 0 0
+Cancelled Reservations 4 56 1,267 0 0 0
+Late Cancellations 0 9 97 0 0 0
+Booked Today Reservations 25 318 7,124 0 0 0
+Booked Today Cancellations 0 12 507 0 0 0
+Booked Today Room Nights 73 734 23,640 0 0 0
+Tomorrow Arrivals 3 0 0 0 0 0
+Tomorrow Arriving Guests 5 0 0 0 0 0
+Tomorrow Departures 25 0 0 0 0 0
+Page1 / 3
+General Manager Report
+
+Type Actual Today M-T-D Y-T-D Last Year Actual Today LY-M-T-D LY-T-D
+Tomorrow Departing Guests 43 0 0 0 0 0
+Transient Rooms In House 73 776 17,636 0 0 0
+Group Rooms In House 0 3 719 0 0 0
+Dirty Rooms 19 253 11,340 0 0 0
+Clean Rooms 95 889 16,759 0 0 0
+Ready Rooms 76 698 9,828 0 0 0
+Group Member Reservation
+Departed
+0 3 77 0 0 0
+Travel Agent In House
+Rooms
+63 735 13,417 0 0 0
+Company Rooms In House 1 27 863 0 0 0
+Group Member Reservation
+In House
+0 3 719 0 0 0
+Complimentary Persons 0 0 5 0 0 0
+Complimentary Children 0 0 2 0 0 0
+Individual Reservation
+Departures
+28 318 5,672 0 0 0
+Individual Departures
+Persons
+54 539 8,869 0 0 0
+Complimentary Adults 0 0 3 0 0 0
+Complimentary Extended
+Stay Reservations
+0 0 55 0 0 0
+Early Departure Persons 3 16 482 0 0 0
+Departure Persons 54 542 8,982 0 0 0
+Extended Departure Persons 6 82 6,104 0 0 0
+No Show Persons 0 0 2 0 0 0
+Day Use Adults 0 0 7 0 0 0
+Extended Stay Reservations 6 55 3,449 0 0 0
+Revenue Statistics
+Type Actual Today M-T-D Y-T-D Last Year Actual Today LY-M-T-D LY-T-D
+Transient Room Revenue $7,715.51 $82,778.87 $1,982,422.66 $0.00 $0.00 $0.00
+Group Block Room Revenue $0.00 $447.00 $58,280.00 $0.00 $0.00 $0.00
+ADR $105.69 $107.26 $111.60 $0.00 $0.00 $0.00
+ADR Excluding Comp and
+House Rooms
+$105.69 $107.26 $111.61 $0.00 $0.00 $0.00
+RevPAR $81.22 $87.95 $97.13 $0.00 $0.00 $0.00
+Page2 / 3
+General Manager Report
+
+Type Actual Today M-T-D Y-T-D Last Year Actual Today LY-M-T-D LY-T-D
+RevPAR Excluding OOO
+Rooms
+$81.22 $88.42 $98.13 $0.00 $0.00 $0.00
+Total Revenue $7,826.01 $84,561.53 $2,067,599.00 $0.00 $0.00 $0.00
+Room Revenue $7,715.51 $83,655.87 $2,050,224.99 $0.00 $0.00 $0.00
+Other Revenue $110.50 $905.66 $17,374.01 $0.00 $0.00 $0.00
+Average Room Revenue Per
+Group Block
+$0.00 $447.00 $481.65 $0.00 $0.00 $0.00
+Average Room Revenue Per
+Group Room
+$0.00 $149.00 $81.06 $0.00 $0.00 $0.00
+Group Member Reservation
+Room Revenue
+$0.00 $596.00 $61,730.00 $0.00 $0.00 $0.00
+Extended Stay Departures
+Other Revenue
+$0.00 $0.00 $874.97 $0.00 $0.00 $0.00
+Extended Stay Departures
+Revenue
+$0.00 -$88.00 $15,430.07 $0.00 $0.00 $0.00
+Extended Stay Departures
+Fnb Revenue
+$0.00 $6.00 $19.00 $0.00 $0.00 $0.00
+Collected Taxes $679.52 $7,785.25 $208,765.75 $0.00 $0.00 $0.00
+Occupancy
+Type Actual Today M-T-D Y-T-D Last Year Actual Today LY-M-T-D LY-T-D
+Occupancy 76.84 % 82.00 % 87.03 % 0.00 % 0.00 % 0.00 %
+Occupancy Excluding Comp
+And House Rooms
+76.84 % 82.00 % 87.03 % 0.00 % 0.00 % 0.00 %
+Occupancy Tomorrow 53.68 % 0.00 % 0.00 % 0.00 % 0.00 % 0.00 %
+Occupancy For Next 7 Days 51.43 % 0.00 % 0.00 % 0.00 % 0.00 % 0.00 %
+Occupancy Percentage For
+The Next 14 Days
+41.88 % 0.00 % 0.00 % 0.00 % 0.00 % 0.00 %
+Occupancy For Next 31 Days 28.66 % 0.00 % 0.00 % 0.00 % 0.00 % 0.00 %
+Page3 / 3
+General Manager Report
