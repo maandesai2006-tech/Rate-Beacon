@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
+import { geocodeHotel } from "@/lib/geo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,22 +50,59 @@ export async function GET(req: NextRequest) {
       { hotel_id: string; hotels: { name: string; latitude: number | null; longitude: number | null } | null }[]
     >();
 
-  const hotels = (tracked ?? [])
-    .map((t) => ({
-      hotelId: t.hotel_id,
-      name: t.hotels?.name ?? t.hotel_id,
-      latitude: t.hotels?.latitude ?? null,
-      longitude: t.hotels?.longitude ?? null,
-    }))
-    .filter((h): h is { hotelId: string; name: string; latitude: number; longitude: number } =>
+  const candidates = (tracked ?? []).map((t) => ({
+    hotelId: t.hotel_id,
+    name: t.hotels?.name ?? t.hotel_id,
+    latitude: t.hotels?.latitude ?? null,
+    longitude: t.hotels?.longitude ?? null,
+  }));
+
+  // Telling someone to "run the geocoder" is not an answer when there is no
+  // geocoder button. A property with no coordinates is placed here and then,
+  // and the result is written back so it only ever happens once.
+  const missing = candidates.filter((h) => h.latitude == null || h.longitude == null);
+  if (missing.length > 0) {
+    const { data: p } = await supa
+      .from("profiles")
+      .select("city_name")
+      .eq("id", profile.id)
+      .maybeSingle<{ city_name: string | null }>();
+    const near = p?.city_name ?? null;
+
+    for (const h of missing.slice(0, 4)) {
+      let geo = await geocodeHotel(h.name, near);
+      if (!geo) {
+        const trimmed = h.name
+          .replace(/\s+by\s+(ihg|marriott|hilton|wyndham|choice|hyatt)\b.*$/i, "")
+          .replace(/\s*[-–—]\s*[^-–—]*$/, "")
+          .trim();
+        if (trimmed && trimmed !== h.name) geo = await geocodeHotel(trimmed, near);
+      }
+      if (!geo) continue;
+      h.latitude = geo.latitude;
+      h.longitude = geo.longitude;
+      await supa
+        .from("hotels")
+        .update({
+          latitude: geo.latitude,
+          longitude: geo.longitude,
+          address: geo.address,
+          geo_updated_at: new Date().toISOString(),
+        })
+        .eq("hotel_id", h.hotelId);
+    }
+  }
+
+  const hotels = candidates.filter(
+    (h): h is { hotelId: string; name: string; latitude: number; longitude: number } =>
       h.latitude != null && h.longitude != null
-    );
+  );
 
   if (hotels.length === 0) {
     return NextResponse.json({
       range,
       hotels: [],
-      note: "None of your hotels have coordinates yet. Run the geocoder from the map tab.",
+      note: "Could not place any of your hotels on the map, so there is nowhere to read a forecast from. Check the hotel names on the profile.",
     });
   }
 

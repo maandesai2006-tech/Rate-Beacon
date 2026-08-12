@@ -10,12 +10,11 @@ import type { GridRow, Hotel, MapPlace } from "@/lib/types";
 //   places   restaurants, attractions and shops from OpenStreetMap, loaded
 //            for whatever the map is showing and refreshed as you pan
 //   traffic  live flow tiles, when a free TomTom key is configured
-//   weather  RainViewer radar (keyless, and the one free source that really
-//            animates) plus OpenWeather's temperature and cloud rasters
+//   weather  NEXRAD rain radar from the Iowa Environmental Mesonet, animated
+//            over the last fifty minutes, plus an OpenWeather temperature field
 //
-// Where a layer needs a key it says so rather than drawing a stand-in, and
-// where a free plan cannot animate, the UI says that too instead of replaying
-// one image behind a moving clock.
+// Every layer is an independent toggle. Traffic is the only one that needs a
+// key, and it says so rather than drawing a stand-in.
 
 type PoiKind = "lodging" | "food" | "attraction" | "shop";
 
@@ -28,42 +27,42 @@ interface Poi {
   detail: string | null;
 }
 
-type WeatherMetric = "radar" | "precipitation" | "temperature" | "clouds";
+/** Everything the user can switch on or off, in one list. */
+type LayerKey = "radar" | "temperature" | "traffic" | PoiKind;
 
-// RainViewer publishes global radar composites — free, no key, no signup —
-// covering roughly the last two hours plus a 30-minute nowcast. It is the one
-// free source that genuinely animates, which is why it is the default: the
-// OpenWeather layers on a free plan are a single current-conditions image.
-const RAINVIEWER_INDEX = "https://api.rainviewer.com/public/weather-maps.json";
-// Colour scheme 8 is RainViewer's "Dark Sky" palette — the restrained modern
-// ramp, rather than the saturated NEXRAD greens that would fight this UI.
-// Trailing flags are smoothing and snow-shading, both on.
-const RADAR_SCHEME = 8;
 // Weather rasters are generated at coarse zooms and answer anything deeper
 // with a grey "Zoom Level Not Supported" placeholder — which is exactly what
 // tiles the map once it frames a single town. maxNativeZoom tells Leaflet to
 // stop asking past that point and upscale the last real tile instead, which
 // is how every weather app renders these layers close in.
-const RADAR_MAX_NATIVE_ZOOM = 10;
 const OPENWEATHER_MAX_NATIVE_ZOOM = 9;
 
-// Radar covers a small part of the frame and is already a restrained palette,
-// so it can sit stronger. The OpenWeather rasters cover everything and would
-// become wallpaper at the same value.
-const RADAR_OPACITY = 0.78;
-const WEATHER_OPACITY = 0.58;
+/**
+ * IEM publishes the NEXRAD composite as "now" plus five-minute steps back to
+ * fifty minutes. Ordered oldest → newest so playback runs forwards.
+ */
+const RADAR_OFFSETS: { suffix: string; minutesAgo: number }[] = [
+  ...Array.from({ length: 10 }, (_, i) => {
+    const minutesAgo = 50 - i * 5;
+    return { suffix: `-m${String(minutesAgo).padStart(2, "0")}m`, minutesAgo };
+  }),
+  { suffix: "", minutesAgo: 0 },
+];
 
-const METRIC_LABEL: Record<WeatherMetric, string> = {
-  radar: "Radar",
-  precipitation: "Rain",
+// Radar covers a small part of the frame, so it can sit strong. Temperature
+// covers all of it and would become wallpaper at the same value.
+const RADAR_OPACITY = 0.8;
+const TEMPERATURE_OPACITY = 0.45;
+
+const LAYER_LABEL: Record<LayerKey, string> = {
+  radar: "Rain radar",
   temperature: "Temperature",
-  clouds: "Clouds",
+  traffic: "Traffic",
+  lodging: "Other hotels",
+  food: "Restaurants",
+  attraction: "Attractions",
+  shop: "Shops",
 };
-
-interface RadarFrame {
-  time: number;
-  path: string;
-}
 
 const POI_STYLE: Record<PoiKind, { label: string; token: string; fallback: string }> = {
   lodging: { label: "Other hotels", token: "--text-muted", fallback: "#6b7a90" },
@@ -99,32 +98,33 @@ export default function RateMap({
   const trafficRef = useRef<TileLayer | null>(null);
   const [ready, setReady] = useState(false);
 
-  const [kinds, setKinds] = useState<Record<PoiKind, boolean>>({
+  // One flat set of toggles. Radar and temperature are on from the start —
+  // a weather map that shows no weather until you find a button is not a
+  // weather map.
+  const [layers, setLayers] = useState<Record<LayerKey, boolean>>({
+    radar: true,
+    temperature: true,
+    traffic: false,
     lodging: true,
     food: true,
     attraction: true,
     shop: false,
   });
-  const [traffic, setTraffic] = useState(false);
+  const kinds = layers;
+  const traffic = layers.traffic;
   const [pois, setPois] = useState<Poi[]>([]);
   const [poiNote, setPoiNote] = useState<string | null>(null);
   const [poiBusy, setPoiBusy] = useState(false);
 
-  const [metric, setMetric] = useState<WeatherMetric | null>("radar");
-  const [playing, setPlaying] = useState(false);
+  const [playing, setPlaying] = useState(true);
   // Playback position as a float, so the field is interpolated between
   // frames rather than stepping — that continuous drift is what makes it read
   // as an animation instead of a slideshow.
   const [cursor, setCursor] = useState(0);
   const cursorRef = useRef(0);
-  // One cached tile layer per forecast hour, so replaying does not refetch.
-  const weatherTilesRef = useRef<Map<number, TileLayer>>(new Map());
-  const [capability, setCapability] = useState<{
-    configured: boolean;
-    forecast: boolean;
-    detail: string | null;
-  } | null>(null);
-  const [radar, setRadar] = useState<{ host: string; frames: RadarFrame[] } | null>(null);
+  // One cached tile layer per radar frame, so looping does not refetch.
+  const radarTilesRef = useRef<Map<number, TileLayer>>(new Map());
+  const tempTileRef = useRef<TileLayer | null>(null);
 
   const hotelById = new Map(hotels.map((h) => [h.hotel_id, h]));
 
@@ -217,10 +217,17 @@ export default function RateMap({
       mapRef.current = map;
       // Its own pane: above the base tiles, below the price pins, and
       // addressable from CSS so the palette can be tuned to this map.
+      const tempPane = map.createPane("temperature");
+      tempPane.style.zIndex = "340";
+      tempPane.style.pointerEvents = "none";
+      tempPane.classList.add("rb-weather-pane");
+      tempPane.dataset.source = "openweather";
+
       const pane = map.createPane("weather");
       pane.style.zIndex = "350";
       pane.style.pointerEvents = "none";
       pane.classList.add("rb-weather-pane");
+      pane.dataset.source = "radar";
       poiLayerRef.current = L.layerGroup().addTo(map);
 
       // Re-measure as soon as the container has been laid out, and again
@@ -437,240 +444,192 @@ export default function RateMap({
   }, [ready, signature, theme]);
 
   // ── Weather field ───────────────────────────────────────────────────────
-  // ── Weather overlay ─────────────────────────────────────────────────────
-  // The picture comes from OpenWeather's map tiles — the same multicolour
-  // rasters a weather app draws — proxied so the key stays server-side. The
-  // numbers in the readout come from Open-Meteo, which gives exact values per
-  // hour that a tile image cannot.
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/map/weather/capability")
-      .then((r) => r.json())
-      .then((j: { configured?: boolean; forecast?: boolean; detail?: string }) => {
-        if (cancelled) return;
-        setCapability({
-          configured: Boolean(j.configured),
-          forecast: Boolean(j.forecast),
-          detail: j.detail ?? null,
-        });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // ── Weather overlays ────────────────────────────────────────────────────
+  //
+  // Radar comes from the Iowa Environmental Mesonet's NEXRAD composite. It is
+  // free, keyless, rendered to street zoom, and it is the actual US radar
+  // mosaic rather than a coarse global product — which is why the previous
+  // source turned into grey placeholder tiles the moment the map framed a
+  // town. IEM also publishes the same composite at five-minute offsets for
+  // the last fifty minutes, so it animates without a paid plan.
+  //
+  // Temperature stays on OpenWeather because nothing free serves a
+  // temperature raster at higher resolution. It is a coarse field by nature —
+  // upscaled it reads as a smooth gradient, which is all a temperature
+  // overlay ever conveys.
+  // Newest first in IEM's naming, so the list is reversed to run forwards.
+  const radarFrames = RADAR_OFFSETS;
+  const timelineLength = layers.radar ? radarFrames.length : 0;
+  const frameIndex = Math.min(Math.round(cursor), Math.max(0, timelineLength - 1));
 
-  // RainViewer's index lists the timestamps it has composites for. It is
-  // keyless and CORS-open, so the browser fetches it directly.
-  useEffect(() => {
-    let cancelled = false;
-    fetch(RAINVIEWER_INDEX)
-      .then((r) => r.json())
-      .then((j: { host?: string; radar?: { past?: RadarFrame[]; nowcast?: RadarFrame[] } }) => {
-        if (cancelled || !j.host) return;
-        const frames = [...(j.radar?.past ?? []), ...(j.radar?.nowcast ?? [])];
-        if (!frames.length) return;
-        setRadar({ host: j.host, frames });
-        // Start on the most recent real observation rather than two hours ago.
-        const nowIndex = Math.max(0, (j.radar?.past?.length ?? 1) - 1);
-        cursorRef.current = nowIndex;
-        setCursor(nowIndex);
-      })
-      .catch(() => {
-        // Radar simply will not be offered; the OpenWeather layers still are.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Radar animates over its own timestamps; the other layers animate over the
-  // forecast hours the readout is showing.
-  const isRadar = metric === "radar" && radar != null;
-  const timelineLength = isRadar ? radar.frames.length : 0;
-
-  // Advance on the animation frame rather than a timer, so the clock runs
-  // smoothly and stops cleanly at the end of the range.
   useEffect(() => {
     if (!playing || timelineLength < 2) return;
     const last = timelineLength - 1;
-    // Radar reads as motion at roughly 400ms a frame; a forecast day should
-    // take about the same wall time whichever range is on.
-    const perFrame = 420;
     let raf = 0;
     let prev = performance.now();
     const tick = (now: number) => {
       const dt = now - prev;
       prev = now;
-      const next = cursorRef.current + dt / perFrame;
+      const next = cursorRef.current + dt / 500;
       if (next >= last) {
-        cursorRef.current = last;
-        setCursor(last);
-        setPlaying(false);
-        return;
+        // Radar is a loop, not a story with an ending.
+        cursorRef.current = 0;
+        setCursor(0);
+      } else {
+        cursorRef.current = next;
+        setCursor(next);
       }
-      cursorRef.current = next;
-      setCursor(next);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [playing, timelineLength]);
 
-  // One tile layer per frame, created lazily and kept. Crossfading between two
-  // raster layers is how a weather app animates radar; swapping a single
-  // layer's URL blinks white while the new tiles load.
-  const frameIndex = Math.min(Math.round(cursor), Math.max(0, timelineLength - 1));
+  // Radar: one cached layer per five-minute offset, crossfaded.
   useEffect(() => {
-    if (!ready || metric == null) return;
+    if (!ready) return;
     let cancelled = false;
-
     (async () => {
       const L = (await import("leaflet")).default;
       const map = mapRef.current;
       if (cancelled || !map) return;
 
+      if (!layers.radar) {
+        for (const layer of radarTilesRef.current.values()) map.removeLayer(layer);
+        radarTilesRef.current.clear();
+        return;
+      }
+
       const layerFor = (index: number) => {
-        // Radar has a frame per timestamp; the static layers have exactly one.
-        if (index < 0 || index > Math.max(0, timelineLength - 1)) return null;
-        const existing = weatherTilesRef.current.get(index);
+        if (index < 0 || index >= radarFrames.length) return null;
+        const existing = radarTilesRef.current.get(index);
         if (existing) return existing;
-
-        let url: string;
-        let attribution: string;
-
-        if (isRadar) {
-          const frame = radar.frames[index];
-          if (!frame) return null;
-          // {size}/{z}/{x}/{y}/{colour}/{smooth}_{snow}.png
-          url = `${radar.host}${frame.path}/512/{z}/{x}/{y}/${RADAR_SCHEME}/1_1.png`;
-          attribution = '&copy; <a href="https://www.rainviewer.com/">RainViewer</a>';
-        } else {
-          if (!metric) return null;
-          url = `/api/map/weather/tile/${metric}/{z}/{x}/{y}`;
-          attribution = '&copy; <a href="https://openweathermap.org/">OpenWeather</a>';
-        }
-
-        const layer = L.tileLayer(url, {
-          maxZoom: 19,
-          maxNativeZoom: isRadar ? RADAR_MAX_NATIVE_ZOOM : OPENWEATHER_MAX_NATIVE_ZOOM,
-          opacity: 0,
-          pane: "weather",
-          attribution,
-        }).addTo(map);
-        weatherTilesRef.current.set(index, layer);
+        const suffix = radarFrames[index].suffix;
+        const layer = L.tileLayer(
+          `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913${suffix}/{z}/{x}/{y}.png`,
+          {
+            maxZoom: 19,
+            maxNativeZoom: 15,
+            opacity: 0,
+            pane: "weather",
+            attribution:
+              '&copy; <a href="https://mesonet.agron.iastate.edu/">Iowa Environmental Mesonet</a>',
+          }
+        ).addTo(map);
+        radarTilesRef.current.set(index, layer);
         return layer;
       };
 
       const current = layerFor(frameIndex);
-      if (current) current.setOpacity(isRadar ? RADAR_OPACITY : WEATHER_OPACITY);
-      // Warm the next frame so the crossfade has tiles ready to show.
-      if (isRadar || capability?.forecast) layerFor(frameIndex + 1);
-
-      for (const [index, layer] of weatherTilesRef.current) {
+      if (current) current.setOpacity(RADAR_OPACITY);
+      layerFor(frameIndex + 1);
+      for (const [index, layer] of radarTilesRef.current) {
         if (index !== frameIndex) layer.setOpacity(0);
       }
     })();
-
     return () => {
       cancelled = true;
     };
-  }, [ready, timelineLength, frameIndex, metric, capability, isRadar, radar]);
+  }, [ready, layers.radar, frameIndex, radarFrames]);
 
-  // Changing metric or clearing the overlay discards every cached layer;
-  // they are keyed by hour, not by metric.
-  const clearWeatherLayers = useCallback(() => {
-    const map = mapRef.current;
-    for (const layer of weatherTilesRef.current.values()) {
-      if (map) map.removeLayer(layer);
-    }
-    weatherTilesRef.current.clear();
-  }, []);
-
-  // Layers are keyed by frame index, and the frames mean different things per
-  // metric, so switching metric must discard them.
+  // Temperature: a single current raster, no timeline.
   useEffect(() => {
-    clearWeatherLayers();
-    cursorRef.current = 0;
-    setCursor(0);
-  }, [metric, clearWeatherLayers]);
+    if (!ready) return;
+    let cancelled = false;
+    (async () => {
+      const L = (await import("leaflet")).default;
+      const map = mapRef.current;
+      if (cancelled || !map) return;
+      if (tempTileRef.current) {
+        map.removeLayer(tempTileRef.current);
+        tempTileRef.current = null;
+      }
+      if (!layers.temperature) return;
+      tempTileRef.current = L.tileLayer("/api/map/weather/tile/temperature/{z}/{x}/{y}", {
+        maxZoom: 19,
+        maxNativeZoom: OPENWEATHER_MAX_NATIVE_ZOOM,
+        opacity: TEMPERATURE_OPACITY,
+        pane: "temperature",
+        attribution: '&copy; <a href="https://openweathermap.org/">OpenWeather</a>',
+      }).addTo(map);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, layers.temperature]);
 
-  useEffect(() => {
-    if (metric == null) clearWeatherLayers();
-  }, [metric, clearWeatherLayers]);
 
-  // The two sources need different colour treatment, so the pane records
-  // which one is painting and the stylesheet does the rest.
-  useEffect(() => {
-    const pane = mapRef.current?.getPane("weather");
-    if (pane) pane.dataset.source = isRadar ? "radar" : "openweather";
-  }, [isRadar, ready]);
-
-  useEffect(() => clearWeatherLayers, [clearWeatherLayers]);
-
-
-  const activeRadar = isRadar ? radar.frames[frameIndex] : null;
-  const clockLabel = activeRadar ? radarLabel(activeRadar.time) : "";
+  const activeRadar = layers.radar ? radarFrames[frameIndex] : null;
+  const clockLabel = activeRadar ? radarLabel(activeRadar.minutesAgo) : "";
 
   return (
     <div>
       {/* Layer controls sit above the map, in one row. */}
+      {/* Every layer in one row of filters: weather, traffic and places all
+          switch the same way, because to a user they are the same kind of
+          thing. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         <span className="kicker mr-1" style={{ color: "var(--text-muted)" }}>
-          Show
+          Layers
         </span>
-        {(Object.keys(POI_STYLE) as PoiKind[]).map((k) => (
-          <button
-            key={k}
-            onClick={() => setKinds((c) => ({ ...c, [k]: !c[k] }))}
-            className="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
-            style={
-              kinds[k]
-                ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
-                : undefined
-            }
-            aria-pressed={kinds[k]}
-          >
-            <span
-              className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ background: `var(${POI_STYLE[k].token})` }}
-              aria-hidden
-            />
-            {POI_STYLE[k].label}
-          </button>
-        ))}
-
-        <button
-          onClick={() => setTraffic((t) => !t)}
-          className="btn-ghost px-3 py-1.5 text-[12px]"
-          style={
-            traffic && TOMTOM_KEY
-              ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
-              : undefined
+        {(["radar", "temperature", "traffic", "lodging", "food", "attraction", "shop"] as LayerKey[]).map(
+          (k) => {
+            const on = layers[k];
+            const swatch = k in POI_STYLE ? `var(${POI_STYLE[k as PoiKind].token})` : null;
+            const needsKey = k === "traffic" && !TOMTOM_KEY;
+            return (
+              <button
+                key={k}
+                onClick={() => setLayers((c) => ({ ...c, [k]: !c[k] }))}
+                className="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
+                aria-pressed={on}
+                title={
+                  needsKey
+                    ? "Live traffic needs a free TomTom key — set NEXT_PUBLIC_TOMTOM_KEY on the deployment"
+                    : LAYER_LABEL[k]
+                }
+                style={
+                  on
+                    ? {
+                        borderColor: "var(--accent)",
+                        background: "var(--accent-soft)",
+                        color: "var(--accent)",
+                      }
+                    : undefined
+                }
+              >
+                {swatch && (
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-full"
+                    style={{ background: swatch }}
+                    aria-hidden
+                  />
+                )}
+                {LAYER_LABEL[k]}
+                {needsKey && (
+                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    key needed
+                  </span>
+                )}
+              </button>
+            );
           }
-          disabled={!TOMTOM_KEY}
-          aria-pressed={traffic}
-          title={
-            TOMTOM_KEY
-              ? "Live traffic flow from TomTom"
-              : "Set NEXT_PUBLIC_TOMTOM_KEY to enable live traffic — TomTom's free tier covers this"
-          }
-        >
-          Traffic
-        </button>
+        )}
 
         <span className="ml-auto text-[11px]" style={{ color: "var(--text-muted)" }}>
           {poiBusy ? "Loading places…" : poiNote ? poiNote : `${pois.length} places in view`}
         </span>
       </div>
 
-      {!TOMTOM_KEY && traffic && (
+      {layers.traffic && !TOMTOM_KEY && (
         <p className="mb-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Live traffic needs a key. TomTom&rsquo;s free tier covers a dashboard
-          like this — add it as <code>NEXT_PUBLIC_TOMTOM_KEY</code> and the layer
-          turns on. Nothing is drawn without real data.
+          Live traffic is the one layer here that has no keyless source. TomTom&rsquo;s
+          free tier covers a dashboard this size — add the key as{" "}
+          <code>NEXT_PUBLIC_TOMTOM_KEY</code> and this layer turns on. Nothing is
+          drawn without real data.
         </p>
       )}
+
 
       <div className="relative">
         <div
@@ -686,98 +645,48 @@ export default function RateMap({
       </div>
 
       {/* Layer picker and the radar clock. The forecast range lives with the
-          forecast below, because it never changed this map — radar is a live
-          two-hour loop and the other layers are a single current image. Three
-          buttons that looked like they did something were worse than none. */}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="kicker mr-1" style={{ color: "var(--text-muted)" }}>
-          Weather
-        </span>
-        {(Object.keys(METRIC_LABEL) as WeatherMetric[])
-          .filter((m) => m !== "radar" || radar != null)
-          .map((m) => (
-            <button
-              key={m}
-              onClick={() => setMetric(m)}
-              className="btn-ghost px-3 py-1.5 text-[12px]"
-              style={
-                metric === m
-                  ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
-                  : undefined
-              }
-            >
-              {METRIC_LABEL[m]}
-            </button>
-          ))}
-        <button
-          onClick={() => setMetric(null)}
-          className="btn-ghost px-3 py-1.5 text-[12px]"
-          style={
-            metric == null
-              ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
-              : undefined
-          }
-        >
-          Off
-        </button>
-
-        {isRadar && timelineLength > 1 && (
-          <>
-            <button
-              onClick={() => {
-                if (!playing && cursorRef.current >= timelineLength - 1) {
-                  cursorRef.current = 0;
-                  setCursor(0);
-                }
-                setPlaying((p) => !p);
-              }}
-              className="btn-ghost px-3 py-1.5 text-[12px]"
-            >
-              {playing ? "Pause" : "Play"}
-            </button>
-            <input
-              type="range"
-              min={0}
-              max={timelineLength - 1}
-              step={0.01}
-              value={Math.min(cursor, timelineLength - 1)}
-              onChange={(e) => {
-                setPlaying(false);
-                const v = Number(e.target.value);
-                cursorRef.current = v;
-                setCursor(v);
-              }}
-              className="min-w-[140px] max-w-[260px] flex-1"
-              aria-label="Radar time"
-            />
-            <span
-              className="tabular-nums text-[12px]"
-              style={{ color: "var(--text-secondary)", minWidth: 74 }}
-            >
-              {clockLabel}
-            </span>
-          </>
-        )}
-
-        <span className="ml-auto text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {metric == null
-            ? "Weather layer off"
-            : isRadar
-              ? "Live radar, last two hours"
-              : capability && !capability.forecast
-                ? "Current conditions"
-                : ""}
-        </span>
-      </div>
+      {/* The radar clock. Only radar has a timeline — temperature is a single
+          current field, and saying so beats a control that does nothing. */}
+      {layers.radar && timelineLength > 1 && (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => setPlaying((p) => !p)}
+            className="btn-ghost px-3 py-1.5 text-[12px]"
+          >
+            {playing ? "Pause" : "Play"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={timelineLength - 1}
+            step={0.01}
+            value={Math.min(cursor, timelineLength - 1)}
+            onChange={(e) => {
+              setPlaying(false);
+              const v = Number(e.target.value);
+              cursorRef.current = v;
+              setCursor(v);
+            }}
+            className="min-w-[160px] max-w-[320px] flex-1"
+            aria-label="Radar time"
+          />
+          <span
+            className="tabular-nums text-[12px] font-medium"
+            style={{ color: "var(--text-primary)", minWidth: 74 }}
+          >
+            {clockLabel}
+          </span>
+          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            NEXRAD composite, last 50 minutes
+          </span>
+        </div>
+      )}
     </div>
   );
 }
 
-/** RainViewer stamps are unix seconds; what matters is the offset from now. */
-function radarLabel(unixSeconds: number): string {
-  const minutes = Math.round((unixSeconds * 1000 - Date.now()) / 60000);
-  if (Math.abs(minutes) <= 4) return "Now";
-  return minutes < 0 ? `${-minutes} min ago` : `+${minutes} min`;
+function radarLabel(minutesAgo: number): string {
+  return minutesAgo === 0 ? "Now" : `${minutesAgo} min ago`;
 }
 
 // Leaflet renders vectors by writing `fill` and `stroke` as SVG presentation

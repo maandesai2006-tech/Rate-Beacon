@@ -23,22 +23,12 @@ export const runtime = "nodejs";
 // can say the overlay is current conditions rather than animating a timeline
 // that is really the same image twelve times.
 
-export type WeatherLayer = "precipitation" | "temperature" | "clouds" | "wind";
+export type WeatherLayer = "temperature";
 
-const LAYERS: Record<WeatherLayer, { v1: string; v2: string; palette?: string }> = {
-  // PR0 is precipitation intensity — the radar look, rather than an
-  // accumulation total that only fills in over hours.
-  precipitation: {
-    v1: "precipitation_new",
-    v2: "PR0",
-    // Transparent when dry, then the app's cool-to-warm progression, so the
-    // overlay reads as part of this map rather than a foreign screenshot.
-    palette:
-      "0:00000000;0.1:64B4E6A0;0.5:3C8CDCC8;1:2864C8DC;2:6E4FC0E0;4:B4459BE6;10:D6465AE6;50:E23C3CF0",
-  },
+const LAYERS: Record<WeatherLayer, { v1: string; v2: string }> = {
+  // Rain now comes from NEXRAD, which is a real radar mosaic rendered to
+  // street zoom. All that is left here is the temperature field.
   temperature: { v1: "temp_new", v2: "TA2" },
-  clouds: { v1: "clouds_new", v2: "CL" },
-  wind: { v1: "wind_new", v2: "WND" },
 };
 
 // Tiles are immutable for a given (layer, z, x, y, hour). Cache hard at the
@@ -88,7 +78,6 @@ export async function GET(
     url.searchParams.set("appid", key);
     url.searchParams.set("date", String(Math.round(date)));
     url.searchParams.set("opacity", "0.7");
-    if (layer.palette) url.searchParams.set("palette", layer.palette);
 
     const res = await fetchTile(url);
     if (res.ok) {
