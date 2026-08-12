@@ -71,8 +71,6 @@ const POI_STYLE: Record<PoiKind, { label: string; token: string; fallback: strin
   shop: { label: "Shops", token: "--status-warning", fallback: "#c08512" },
 };
 
-const TOMTOM_KEY = process.env.NEXT_PUBLIC_TOMTOM_KEY ?? "";
-
 export default function RateMap({
   row,
   hotels,
@@ -111,7 +109,10 @@ export default function RateMap({
     shop: false,
   });
   const kinds = layers;
-  const traffic = layers.traffic;
+  const [trafficStatus, setTrafficStatus] = useState<{
+    available: boolean;
+    detail: string;
+  } | null>(null);
   const [pois, setPois] = useState<Poi[]>([]);
   const [poiNote, setPoiNote] = useState<string | null>(null);
   const [poiBusy, setPoiBusy] = useState(false);
@@ -203,6 +204,22 @@ export default function RateMap({
     fitDone.current = true;
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/map/traffic/status")
+      .then((r) => r.json())
+      .then((j: { available?: boolean; detail?: string }) => {
+        if (cancelled) return;
+        setTrafficStatus({ available: Boolean(j.available), detail: j.detail ?? "" });
+      })
+      .catch(() => {
+        if (!cancelled) setTrafficStatus({ available: false, detail: "Traffic status unavailable." });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // ── Map creation ────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -222,6 +239,10 @@ export default function RateMap({
       tempPane.style.pointerEvents = "none";
       tempPane.classList.add("rb-weather-pane");
       tempPane.dataset.source = "openweather";
+
+      const trafficPane = map.createPane("traffic");
+      trafficPane.style.zIndex = "360";
+      trafficPane.style.pointerEvents = "none";
 
       const pane = map.createPane("weather");
       pane.style.zIndex = "350";
@@ -283,6 +304,8 @@ export default function RateMap({
   }, [ready, theme]);
 
   // ── Traffic overlay ─────────────────────────────────────────────────────
+  // Proxied so the key never reaches the browser, and re-created on a theme
+  // change because TomTom ships a light and a dark styling of the same data.
   useEffect(() => {
     if (!ready) return;
     (async () => {
@@ -293,18 +316,19 @@ export default function RateMap({
         map.removeLayer(trafficRef.current);
         trafficRef.current = null;
       }
-      if (!traffic || !TOMTOM_KEY) return;
+      if (!layers.traffic || !trafficStatus?.available) return;
       trafficRef.current = L.tileLayer(
-        `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=${TOMTOM_KEY}`,
+        `/api/map/traffic/tile/{z}/{x}/{y}?theme=${theme}`,
         {
           maxZoom: 19,
           maxNativeZoom: 18,
-          opacity: 0.85,
-          attribution: '&copy; <a href="https://www.tomtom.com">TomTom</a> traffic',
+          opacity: 0.9,
+          pane: "traffic",
+          attribution: '&copy; <a href="https://www.tomtom.com">TomTom</a>',
         }
       ).addTo(map);
     })();
-  }, [ready, traffic]);
+  }, [ready, layers.traffic, theme, trafficStatus?.available]);
 
   // ── Places, loaded for whatever is on screen ────────────────────────────
   const activeKinds = (Object.keys(kinds) as PoiKind[]).filter((k) => kinds[k]);
@@ -576,7 +600,7 @@ export default function RateMap({
           (k) => {
             const on = layers[k];
             const swatch = k in POI_STYLE ? `var(${POI_STYLE[k as PoiKind].token})` : null;
-            const needsKey = k === "traffic" && !TOMTOM_KEY;
+            const needsKey = k === "traffic" && trafficStatus?.available === false;
             return (
               <button
                 key={k}
@@ -621,12 +645,10 @@ export default function RateMap({
         </span>
       </div>
 
-      {layers.traffic && !TOMTOM_KEY && (
+      {layers.traffic && trafficStatus && !trafficStatus.available && (
         <p className="mb-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Live traffic is the one layer here that has no keyless source. TomTom&rsquo;s
-          free tier covers a dashboard this size — add the key as{" "}
-          <code>NEXT_PUBLIC_TOMTOM_KEY</code> and this layer turns on. Nothing is
-          drawn without real data.
+          {trafficStatus.detail} Traffic is the one layer here with no keyless
+          source — nothing is drawn without real data.
         </p>
       )}
 
