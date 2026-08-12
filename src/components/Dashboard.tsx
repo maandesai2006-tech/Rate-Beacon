@@ -12,6 +12,7 @@ import Link from "next/link";
 import type { Baseline, GridResponse, GridRow, HistoryPoint, Hotel, MapPlace, RankStat } from "@/lib/types";
 import Sparkline from "@/components/Sparkline";
 import ReportsPanel from "@/components/ReportsPanel";
+import HotelForecast, { type ForecastRange } from "@/components/HotelForecast";
 import dynamicImport from "next/dynamic";
 
 // Leaflet touches window on import, so the map is client-only.
@@ -206,10 +207,13 @@ export default function Dashboard() {
   const mapFillStarted = useRef(false);
   useEffect(() => {
     if (mapFillStarted.current || !data || !data.configured) return;
-    const anyLocated = [...data.hotels, ...(data.mapHotels ?? [])].some(
-      (h) => h.latitude != null
+    // Previously this only ran when *nothing* was placed, so a partially
+    // geocoded set stayed partial forever — 11 of 28 hotels on the map with no
+    // way to finish without pressing a button nobody knew to press.
+    const anyMissing = [...data.hotels, ...(data.mapHotels ?? [])].some(
+      (h) => h.latitude == null || h.longitude == null
     );
-    if (anyLocated) return;
+    if (!anyMissing) return;
     mapFillStarted.current = true;
     fillMap().catch(() => {});
   }, [data, fillMap]);
@@ -748,7 +752,14 @@ export default function Dashboard() {
 
       {tab === "map" && (
         <div className="card rise mt-4 p-5">
-          <MapPanel rows={rows} hotels={[...hotels, ...(mapHotels ?? [])]} places={mapPlaces ?? []} fmt={fmt} theme={theme} />
+          <MapPanel
+            rows={rows}
+            hotels={[...hotels, ...(mapHotels ?? [])]}
+            places={mapPlaces ?? []}
+            fmt={fmt}
+            theme={theme}
+            profileId={profileId}
+          />
         </div>
       )}
 
@@ -895,7 +906,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
     ["grid", "Rate grid"],
     ["trends", "Trends"],
     ["ladder", "Rate ladder"],
-    ["map", "Map"],
+    ["map", "Map & Conditions"],
     ["reports", "Manager reports"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
@@ -1033,14 +1044,19 @@ function MapPanel({
   places,
   fmt,
   theme,
+  profileId,
 }: {
   rows: GridRow[];
   hotels: Hotel[];
   places: MapPlace[];
   fmt: (n: number) => string;
   theme: "light" | "dark";
+  profileId: number | null;
 }) {
   const [idx, setIdx] = useState(0);
+  // One range for the whole tab: the map's timeline and the forecast strip
+  // below it are two views of the same window, so they share the control.
+  const [range, setRange] = useState<ForecastRange>("12h");
   const row = rows[Math.min(idx, rows.length - 1)] ?? null;
   const located = hotels.filter((h) => h.latitude != null && h.longitude != null);
   const total = located.length + places.filter((p) => !p.hotel_id).length;
@@ -1082,7 +1098,15 @@ function MapPanel({
       </div>
 
       <div className="mt-3">
-        <RateMap row={row} hotels={hotels} places={places} fmt={fmt} theme={theme} />
+        <RateMap
+          row={row}
+          hotels={hotels}
+          places={places}
+          fmt={fmt}
+          theme={theme}
+          range={range}
+          onRangeChange={setRange}
+        />
       </div>
 
       <div
@@ -1102,6 +1126,8 @@ function MapPanel({
         ))}
         <span>· starred pins are your hotels · grey pins are nearby hotels without a tracked rate</span>
       </div>
+
+      <HotelForecast profileId={profileId} range={range} />
     </div>
   );
 }

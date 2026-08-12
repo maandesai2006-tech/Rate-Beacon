@@ -102,14 +102,23 @@ export default function RateMap({
   places,
   fmt,
   theme,
+  range,
+  onRangeChange,
 }: {
   row: GridRow | null;
   hotels: Hotel[];
   places: MapPlace[];
   fmt: (n: number) => string;
   theme: "light" | "dark";
+  /** Shared with the forecast strip below the map so the two agree. */
+  range: WeatherRange;
+  onRangeChange: (r: WeatherRange) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const fitDone = useRef(false);
+  // Latest points, read by the resize handler without re-running its effect.
+  const pointsRef = useRef<{ lat: number; lon: number }[]>([]);
   const mapRef = useRef<LeafletMap | null>(null);
   const markersRef = useRef<Layer[]>([]);
   const tileRef = useRef<TileLayer | null>(null);
@@ -129,7 +138,6 @@ export default function RateMap({
   const [poiBusy, setPoiBusy] = useState(false);
 
   const [field, setField] = useState<WeatherField | null>(null);
-  const [range, setRange] = useState<WeatherRange>("12h");
   const [metric, setMetric] = useState<WeatherMetric>("radar");
   const [playing, setPlaying] = useState(false);
   const [weatherBusy, setWeatherBusy] = useState(false);
@@ -211,6 +219,20 @@ export default function RateMap({
     return "var(--div-high)";
   }
 
+  // Frame the tracked hotels. Only ever runs when the container has a real
+  // size — fitting against a 0x0 box is what produced the world view.
+  const refit = useCallback(async (map: LeafletMap) => {
+    const size = map.getSize();
+    if (size.x < 50 || size.y < 50) return;
+    const pts = pointsRef.current;
+    if (pts.length === 0) return;
+    const L = (await import("leaflet")).default;
+    const bounds = L.latLngBounds(pts.map((p) => [p.lat, p.lon] as [number, number]));
+    if (!bounds.isValid()) return;
+    map.fitBounds(bounds, { padding: [48, 48], maxZoom: 15 });
+    fitDone.current = true;
+  }, []);
+
   // ── Map creation ────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -230,10 +252,31 @@ export default function RateMap({
       pane.style.pointerEvents = "none";
       pane.classList.add("rb-weather-pane");
       poiLayerRef.current = L.layerGroup().addTo(map);
+
+      // Re-measure as soon as the container has been laid out, and again
+      // whenever it changes size. Without this the map keeps whatever
+      // geometry it guessed at 0x0 and never recovers.
+      const remeasure = () => {
+        map.invalidateSize({ animate: false });
+        // The first honest measurement is also the first chance to frame the
+        // hotels correctly.
+        if (!fitDone.current) refit(map);
+      };
+      requestAnimationFrame(remeasure);
+
+      const container = containerRef.current;
+      if (container && typeof ResizeObserver !== "undefined") {
+        const ro = new ResizeObserver(() => map.invalidateSize({ animate: false }));
+        ro.observe(container);
+        resizeObserverRef.current = ro;
+      }
+
       setReady(true);
     })();
     return () => {
       cancelled = true;
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
       mapRef.current?.remove();
       mapRef.current = null;
     };
@@ -362,7 +405,7 @@ export default function RateMap({
 
   // ── Hotel price pills ───────────────────────────────────────────────────
   const signature = points.map((p) => `${p.key}:${p.price ?? ""}`).join("|");
-  const fitDone = useRef(false);
+  pointsRef.current = points.map((p) => ({ lat: p.lat, lon: p.lon }));
   useEffect(() => {
     if (!ready) return;
     (async () => {
@@ -415,15 +458,9 @@ export default function RateMap({
         markersRef.current.push(marker);
       }
 
-      // Only frame the hotels once. Refitting on every redraw would fight the
-      // user every time they pan to look at something.
-      if (!fitDone.current) {
-        const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number]));
-        if (bounds.isValid()) {
-          map.fitBounds(bounds, { padding: [48, 48], maxZoom: 15 });
-          fitDone.current = true;
-        }
-      }
+      // Frame the hotels once. Refitting on every redraw would fight the user
+      // each time they pan to look at something.
+      if (!fitDone.current) await refit(map);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, signature, theme]);
@@ -726,7 +763,7 @@ export default function RateMap({
           <button
             key={r}
             onClick={() => {
-              setRange(r);
+              onRangeChange(r);
               loadWeather(r);
             }}
             disabled={weatherBusy}
