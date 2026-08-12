@@ -41,6 +41,22 @@ interface WeatherFrame {
   cells: WeatherCell[];
 }
 
+interface WeatherField {
+  range: WeatherRange;
+  grid: number;
+  bbox: { south: number; west: number; north: number; east: number };
+  frames: WeatherFrame[];
+}
+
+type WeatherRange = "12h" | "24h" | "7d";
+type WeatherMetric = "precipitation" | "temperature";
+
+const RANGE_LABEL: Record<WeatherRange, string> = {
+  "12h": "12 hours",
+  "24h": "24 hours",
+  "7d": "7 days",
+};
+
 const POI_STYLE: Record<PoiKind, { label: string; token: string; fallback: string }> = {
   lodging: { label: "Other hotels", token: "--text-muted", fallback: "#6b7a90" },
   food: { label: "Restaurants", token: "--status-serious", fallback: "#d1662f" },
@@ -68,7 +84,6 @@ export default function RateMap({
   const markersRef = useRef<Layer[]>([]);
   const tileRef = useRef<TileLayer | null>(null);
   const poiLayerRef = useRef<LayerGroup | null>(null);
-  const weatherLayerRef = useRef<LayerGroup | null>(null);
   const trafficRef = useRef<TileLayer | null>(null);
   const [ready, setReady] = useState(false);
 
@@ -83,11 +98,18 @@ export default function RateMap({
   const [poiNote, setPoiNote] = useState<string | null>(null);
   const [poiBusy, setPoiBusy] = useState(false);
 
-  const [frames, setFrames] = useState<WeatherFrame[] | null>(null);
-  const [frameIndex, setFrameIndex] = useState(0);
+  const [field, setField] = useState<WeatherField | null>(null);
+  const [range, setRange] = useState<WeatherRange>("12h");
+  const [metric, setMetric] = useState<WeatherMetric>("precipitation");
   const [playing, setPlaying] = useState(false);
   const [weatherBusy, setWeatherBusy] = useState(false);
   const [weatherNote, setWeatherNote] = useState<string | null>(null);
+  // Playback position as a float, so the field is interpolated between
+  // frames rather than stepping — that continuous drift is what makes it read
+  // as an animation instead of a slideshow.
+  const [cursor, setCursor] = useState(0);
+  const cursorRef = useRef(0);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const hotelById = new Map(hotels.map((h) => [h.hotel_id, h]));
 
@@ -165,7 +187,6 @@ export default function RateMap({
       }).setView([30.47, -87.2], 12);
       mapRef.current = map;
       poiLayerRef.current = L.layerGroup().addTo(map);
-      weatherLayerRef.current = L.layerGroup().addTo(map);
       setReady(true);
     })();
     return () => {
@@ -364,105 +385,156 @@ export default function RateMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, signature, theme]);
 
-  // ── Weather playback ────────────────────────────────────────────────────
-  const loadWeather = useCallback(async () => {
-    const map = mapRef.current;
-    if (!map) return;
-    const b = map.getBounds();
-    const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]
-      .map((n) => n.toFixed(4))
-      .join(",");
-    setWeatherBusy(true);
-    setWeatherNote(null);
-    try {
-      const res = await fetch(`/api/map/weather?bbox=${bbox}`);
-      const j = (await res.json()) as { frames?: WeatherFrame[]; error?: string };
-      if (j.error || !j.frames?.length) {
-        setWeatherNote(j.error ?? "No forecast came back for this area.");
+  // ── Weather field ───────────────────────────────────────────────────────
+  const loadWeather = useCallback(
+    async (next: WeatherRange) => {
+      const map = mapRef.current;
+      if (!map) return;
+      const b = map.getBounds();
+      const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]
+        .map((n) => n.toFixed(4))
+        .join(",");
+      setWeatherBusy(true);
+      setWeatherNote(null);
+      try {
+        const res = await fetch(`/api/map/weather?bbox=${bbox}&range=${next}`);
+        const j = (await res.json()) as Partial<WeatherField> & { error?: string };
+        if (j.error || !j.frames?.length || !j.bbox || !j.grid) {
+          setWeatherNote(j.error ?? "No forecast came back for this area.");
+          return;
+        }
+        setField({ range: next, grid: j.grid, bbox: j.bbox, frames: j.frames });
+        cursorRef.current = 0;
+        setCursor(0);
+        setPlaying(true);
+      } catch (e) {
+        setWeatherNote((e as Error).message);
+      } finally {
+        setWeatherBusy(false);
+      }
+    },
+    []
+  );
+
+  // Advance on the animation frame rather than a timer, so the field drifts
+  // smoothly and pauses cleanly at the end of the range.
+  useEffect(() => {
+    if (!playing || !field) return;
+    const last = field.frames.length - 1;
+    // A day of forecast should take about the same wall time whichever range
+    // is on, so seven days plays faster per frame than twelve hours.
+    const perFrame = field.range === "7d" ? 1100 : 700;
+    let raf = 0;
+    let prev = performance.now();
+    const tick = (now: number) => {
+      const dt = now - prev;
+      prev = now;
+      const next = cursorRef.current + dt / perFrame;
+      if (next >= last) {
+        cursorRef.current = last;
+        setCursor(last);
+        setPlaying(false);
         return;
       }
-      setFrames(j.frames);
-      setFrameIndex(0);
-      setPlaying(true);
-    } catch (e) {
-      setWeatherNote((e as Error).message);
-    } finally {
-      setWeatherBusy(false);
+      cursorRef.current = next;
+      setCursor(next);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, field]);
+
+  // Paint the field. A GRID×GRID image scaled up with smoothing gives a
+  // continuous surface — the same trick a radar overlay uses — instead of the
+  // discrete blobs a marker per sample produces.
+  const paint = useCallback(() => {
+    const canvas = canvasRef.current;
+    const map = mapRef.current;
+    if (!canvas || !map) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const size = map.getSize();
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== size.x * dpr || canvas.height !== size.y * dpr) {
+      canvas.width = size.x * dpr;
+      canvas.height = size.y * dpr;
+      canvas.style.width = `${size.x}px`;
+      canvas.style.height = `${size.y}px`;
     }
-  }, []);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.x, size.y);
+    if (!field) return;
 
-  // Advance the frame while playing, and stop at the end of the twelve hours.
+    const { frames, grid, bbox } = field;
+    const i0 = Math.floor(cursorRef.current);
+    const i1 = Math.min(i0 + 1, frames.length - 1);
+    const t = cursorRef.current - i0;
+    const a = frames[i0];
+    const b = frames[i1];
+    if (!a || !b) return;
+
+    // Build the low-resolution image, one pixel per sample.
+    const img = ctx.createImageData(grid, grid);
+    for (let k = 0; k < grid * grid; k++) {
+      const va = valueOf(a.cells[k], metric);
+      const vb = valueOf(b.cells[k], metric);
+      const v = va == null ? vb : vb == null ? va : va + (vb - va) * t;
+      const [r, g, bl, alpha] = v == null ? [0, 0, 0, 0] : colorFor(v, metric);
+      img.data[k * 4] = r;
+      img.data[k * 4 + 1] = g;
+      img.data[k * 4 + 2] = bl;
+      img.data[k * 4 + 3] = alpha;
+    }
+
+    // Where the sampled area sits on screen right now. The samples are cell
+    // centres, so the painted rect is inset by half a cell on every side.
+    const nw = map.latLngToContainerPoint([bbox.north, bbox.west]);
+    const se = map.latLngToContainerPoint([bbox.south, bbox.east]);
+    const halfW = (se.x - nw.x) / grid / 2;
+    const halfH = (se.y - nw.y) / grid / 2;
+
+    const off = document.createElement("canvas");
+    off.width = grid;
+    off.height = grid;
+    off.getContext("2d")?.putImageData(img, 0, 0);
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(
+      off,
+      nw.x + halfW,
+      nw.y + halfH,
+      se.x - nw.x - halfW * 2,
+      se.y - nw.y - halfH * 2
+    );
+  }, [field, metric]);
+
   useEffect(() => {
-    if (!playing || !frames) return;
-    const id = setInterval(() => {
-      setFrameIndex((i) => {
-        if (i + 1 >= frames.length) {
-          setPlaying(false);
-          return i;
-        }
-        return i + 1;
-      });
-    }, 900);
-    return () => clearInterval(id);
-  }, [playing, frames]);
+    paint();
+  }, [paint, cursor]);
 
-  // Draw the current frame — and nothing at all once playback is dismissed,
-  // which is what "only for the duration of this" means.
+  // Keep the field pinned to the ground while the map moves.
   useEffect(() => {
     if (!ready) return;
-    (async () => {
-      const L = (await import("leaflet")).default;
-      const group = weatherLayerRef.current;
-      if (!group) return;
-      group.clearLayers();
-      if (!frames) return;
-      const frame = frames[Math.min(frameIndex, frames.length - 1)];
-      if (!frame) return;
-
-      const temps = frame.cells
-        .map((c) => c.temperature)
-        .filter((t): t is number => t != null);
-      const lo = temps.length ? Math.min(...temps) : 0;
-      const hi = temps.length ? Math.max(...temps) : 1;
-
-      for (const cell of frame.cells) {
-        if (cell.temperature == null) continue;
-        const marker = L.circleMarker([cell.latitude, cell.longitude], {
-          radius: 26,
-          stroke: false,
-          fillColor: tempColor(cell.temperature, lo, hi),
-          fillOpacity: 0.32,
-          interactive: true,
-        });
-        marker.bindTooltip(
-          `${Math.round(cell.temperature)}°F` +
-            (cell.precipitationChance != null ? ` · ${cell.precipitationChance}% rain` : "") +
-            (cell.windSpeed != null ? ` · ${Math.round(cell.windSpeed)} mph` : ""),
-          { direction: "top" }
-        );
-        group.addLayer(marker);
-
-        const label = L.marker([cell.latitude, cell.longitude], {
-          interactive: false,
-          icon: L.divIcon({
-            className: "rb-wx-wrap",
-            html: `<div class="rb-wx">${Math.round(cell.temperature)}&deg;</div>`,
-            iconSize: [0, 0],
-            iconAnchor: [0, 0],
-          }),
-        });
-        group.addLayer(label);
-      }
-    })();
-  }, [ready, frames, frameIndex]);
+    const map = mapRef.current;
+    if (!map) return;
+    const onMove = () => paint();
+    map.on("move zoom viewreset resize", onMove);
+    return () => {
+      map.off("move zoom viewreset resize", onMove);
+    };
+  }, [ready, paint]);
 
   function stopWeather() {
     setPlaying(false);
-    setFrames(null);
-    setFrameIndex(0);
+    setField(null);
+    cursorRef.current = 0;
+    setCursor(0);
   }
 
-  const frame = frames?.[Math.min(frameIndex, frames.length - 1)] ?? null;
+
+  const activeFrame = field?.frames[Math.round(cursor)] ?? null;
 
   return (
     <div>
@@ -524,85 +596,236 @@ export default function RateMap({
         </p>
       )}
 
-      <div
-        ref={containerRef}
-        style={{
-          height: 560,
-          width: "100%",
-          borderRadius: 10,
-          overflow: "hidden",
-          background: "var(--surface-2)",
-        }}
-      />
+      <div className="relative">
+        <div
+          ref={containerRef}
+          style={{
+            height: 560,
+            width: "100%",
+            borderRadius: 10,
+            overflow: "hidden",
+            background: "var(--surface-2)",
+          }}
+        />
+        {/* The field is painted above the tiles but below the controls, and
+            never takes pointer events, so the map stays draggable through it. */}
+        <canvas
+          ref={canvasRef}
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: 0,
+            borderRadius: 10,
+            pointerEvents: "none",
+            zIndex: 400,
+            opacity: field ? 1 : 0,
+            transition: "opacity 0.35s var(--ease)",
+            mixBlendMode: "multiply",
+          }}
+        />
+      </div>
 
-      {/* Weather playback, below the map, only running while asked. */}
-      <div className="mt-3 flex flex-wrap items-center gap-3">
-        {!frames ? (
+      {/* Forecast playback, below the map. The field only exists while it is
+          being watched — clearing removes the layer entirely. */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {(["12h", "24h", "7d"] as WeatherRange[]).map((r) => (
+          <button
+            key={r}
+            onClick={() => {
+              setRange(r);
+              loadWeather(r);
+            }}
+            disabled={weatherBusy}
+            className="btn-ghost px-3 py-1.5 text-[12px]"
+            style={
+              field && range === r
+                ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
+                : undefined
+            }
+          >
+            {RANGE_LABEL[r]}
+          </button>
+        ))}
+
+        {field && (
           <>
-            <button
-              onClick={loadWeather}
-              disabled={weatherBusy}
-              className="btn-accent px-4 py-2 text-[13px]"
-            >
-              {weatherBusy ? "Loading forecast…" : "Play 12 hour weather"}
-            </button>
-            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-              {weatherNote ??
-                "Twelve hours of forecast across the area on screen, from Open-Meteo."}
+            <span className="mx-1" style={{ color: "var(--border)" }} aria-hidden>
+              |
             </span>
-          </>
-        ) : (
-          <>
-            <button
-              onClick={() => {
-                if (!playing && frameIndex >= (frames?.length ?? 0) - 1) setFrameIndex(0);
-                setPlaying((p) => !p);
-              }}
-              className="btn-accent px-4 py-2 text-[13px]"
-            >
-              {playing ? "Pause" : "Play"}
-            </button>
-            <input
-              type="range"
-              min={0}
-              max={frames.length - 1}
-              value={frameIndex}
-              onChange={(e) => {
-                setPlaying(false);
-                setFrameIndex(Number(e.target.value));
-              }}
-              className="min-w-[180px] flex-1"
-              aria-label="Forecast hour"
-            />
-            <span className="tabular-nums text-[12px]" style={{ color: "var(--text-primary)" }}>
-              {frame ? hourLabel(frame.time) : ""}
-            </span>
-            {frame && <WeatherSummary frame={frame} />}
-            <button onClick={stopWeather} className="btn-ghost px-3 py-1.5 text-[12px]">
-              Clear
-            </button>
+            {(["precipitation", "temperature"] as WeatherMetric[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMetric(m)}
+                className="btn-ghost px-3 py-1.5 text-[12px]"
+                style={
+                  metric === m
+                    ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
+                    : undefined
+                }
+              >
+                {m === "precipitation" ? "Rain" : "Temperature"}
+              </button>
+            ))}
           </>
         )}
+
+        {!field && (
+          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            {weatherBusy
+              ? "Loading forecast…"
+              : (weatherNote ??
+                "Forecast across the area on screen, from Open-Meteo.")}
+          </span>
+        )}
       </div>
+
+      {field && (
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => {
+              if (!playing && cursorRef.current >= field.frames.length - 1) {
+                cursorRef.current = 0;
+                setCursor(0);
+              }
+              setPlaying((p) => !p);
+            }}
+            className="btn-accent px-4 py-2 text-[13px]"
+          >
+            {playing ? "Pause" : "Play"}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={field.frames.length - 1}
+            step={0.01}
+            value={cursor}
+            onChange={(e) => {
+              setPlaying(false);
+              const v = Number(e.target.value);
+              cursorRef.current = v;
+              setCursor(v);
+            }}
+            className="min-w-[200px] flex-1"
+            aria-label="Forecast time"
+          />
+          <span
+            className="tabular-nums text-[13px] font-medium"
+            style={{ color: "var(--text-primary)", minWidth: 92 }}
+          >
+            {activeFrame ? frameLabel(activeFrame.time, field.range) : ""}
+          </span>
+          <WeatherLegend metric={metric} />
+          {activeFrame && <WeatherSummary frame={activeFrame} range={field.range} />}
+          <button onClick={stopWeather} className="btn-ghost px-3 py-1.5 text-[12px]">
+            Clear
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function WeatherSummary({ frame }: { frame: WeatherFrame }) {
+function valueOf(cell: WeatherCell | undefined, metric: WeatherMetric): number | null {
+  if (!cell) return null;
+  if (metric === "temperature") return cell.temperature;
+  // Rain reads better as likelihood than as depth: an inch of rain and a 90%
+  // chance of drizzle are different facts, and the chance is the one a hotel
+  // acts on. Fall back to measured depth when the chance is absent.
+  if (cell.precipitationChance != null) return cell.precipitationChance;
+  return cell.precipitation != null ? Math.min(100, cell.precipitation * 200) : null;
+}
+
+/**
+ * Colour for one sample, as premultiplied RGBA bytes.
+ *
+ * Rain is a magnitude, so it takes one hue running light to dark with alpha
+ * fading to nothing at zero — a dry map stays clear rather than being washed
+ * blue. Temperature is a two-ended scale, so it takes the cool/warm pair with
+ * a neutral middle. Neither is a rainbow.
+ */
+function colorFor(value: number, metric: WeatherMetric): [number, number, number, number] {
+  if (metric === "precipitation") {
+    const t = Math.min(1, Math.max(0, value / 100));
+    // Below about 10% there is nothing worth drawing.
+    if (t < 0.1) return [0, 0, 0, 0];
+    const eased = (t - 0.1) / 0.9;
+    const stops: [number, number, number][] = [
+      [186, 222, 246],
+      [116, 178, 232],
+      [52, 128, 208],
+      [26, 78, 158],
+    ];
+    const [r, g, b] = rampAt(stops, eased);
+    return [r, g, b, Math.round(40 + eased * 165)];
+  }
+
+  // Fahrenheit, on the band a guest actually experiences.
+  const t = Math.min(1, Math.max(0, (value - 30) / 70));
+  const stops: [number, number, number][] = [
+    [70, 130, 210],
+    [150, 195, 235],
+    [242, 240, 232],
+    [235, 170, 90],
+    [214, 74, 62],
+  ];
+  const [r, g, b] = rampAt(stops, t);
+  return [r, g, b, 150];
+}
+
+function rampAt(stops: [number, number, number][], t: number): [number, number, number] {
+  const x = t * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  const f = x - i;
+  const a = stops[i];
+  const b = stops[i + 1];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
+  ];
+}
+
+function WeatherLegend({ metric }: { metric: WeatherMetric }) {
+  const steps = metric === "precipitation" ? [15, 40, 65, 90] : [40, 55, 70, 85, 95];
+  return (
+    <span className="inline-flex items-center gap-1.5" aria-hidden>
+      {steps.map((v) => {
+        const [r, g, b, a] = colorFor(v, metric);
+        return (
+          <span
+            key={v}
+            className="inline-block h-3 w-5 rounded-sm"
+            style={{ background: `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(2)})` }}
+            title={metric === "precipitation" ? `${v}% chance` : `${v}°F`}
+          />
+        );
+      })}
+      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+        {metric === "precipitation" ? "rain chance" : "°F"}
+      </span>
+    </span>
+  );
+}
+
+function WeatherSummary({ frame, range }: { frame: WeatherFrame; range: WeatherRange }) {
   const temps = frame.cells.map((c) => c.temperature).filter((t): t is number => t != null);
-  const rain = frame.cells
-    .map((c) => c.precipitationChance)
-    .filter((t): t is number => t != null);
+  const rain = frame.cells.map((c) => c.precipitationChance).filter((t): t is number => t != null);
   if (temps.length === 0) return null;
-  const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
   const maxRain = rain.length ? Math.max(...rain) : null;
   return (
     <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
-      {Math.round(Math.min(...temps))}–{Math.round(Math.max(...temps))}°F across the view,
-      averaging {Math.round(avg)}°
-      {maxRain != null ? ` · rain chance up to ${maxRain}%` : ""}
+      {Math.round(Math.min(...temps))}&ndash;{Math.round(Math.max(...temps))}&deg;F
+      {range === "7d" ? " high" : ""}
+      {maxRain != null ? ` · rain to ${maxRain}%` : ""}
     </span>
   );
+}
+
+function frameLabel(iso: string, range: WeatherRange): string {
+  const d = new Date(range === "7d" ? `${iso}T12:00:00` : iso);
+  return range === "7d"
+    ? d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
+    : d.toLocaleTimeString("en-US", { hour: "numeric", hour12: true });
 }
 
 // Leaflet renders vectors by writing `fill` and `stroke` as SVG presentation
@@ -613,46 +836,6 @@ function cssVar(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
-}
-
-function parseColor(input: string): [number, number, number] | null {
-  const hex = input.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-  if (hex) {
-    const h = hex[1].length === 3 ? hex[1].split("").map((c) => c + c).join("") : hex[1];
-    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-  }
-  const rgb = input.match(/rgba?\(([^)]+)\)/i);
-  if (rgb) {
-    const parts = rgb[1].split(/[,\s/]+/).filter(Boolean).map(Number);
-    if (parts.length >= 3 && parts.slice(0, 3).every(Number.isFinite)) {
-      return [parts[0], parts[1], parts[2]];
-    }
-  }
-  return null;
-}
-
-function mix(a: string, b: string, t: number): string {
-  const ca = parseColor(a);
-  const cb = parseColor(b);
-  if (!ca || !cb) return a;
-  const c = ca.map((v, i) => Math.round(v + (cb[i] - v) * t));
-  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
-}
-
-// Temperature is a two-ended scale — cold at one end, hot at the other — so it
-// takes the diverging pair with the neutral midpoint, not a rainbow.
-function tempColor(value: number, lo: number, hi: number): string {
-  const cool = cssVar("--div-low", "#2e7ff0");
-  const mid = cssVar("--div-mid", "#f1f5fb");
-  const warm = cssVar("--div-high", "#e2564f");
-  if (hi <= lo) return mid;
-  const t = Math.min(1, Math.max(0, (value - lo) / (hi - lo)));
-  return t < 0.5 ? mix(cool, mid, t * 2) : mix(mid, warm, (t - 0.5) * 2);
-}
-
-function hourLabel(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString("en-US", { hour: "numeric", hour12: true });
 }
 
 function escapeHtml(s: string): string {

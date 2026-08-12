@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { extractMetrics, extractReportDate } from "../src/lib/reports.ts";
+import { extractMetrics, extractReportDate, matchHotel } from "../src/lib/reports.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (name) => readFileSync(join(here, "fixtures", name), "utf8");
@@ -111,6 +111,39 @@ console.log("\nRegression: delimited layouts");
   check("csv rooms sold", m.rooms_sold, 67);
   check("csv rooms available", m.rooms_available, 80);
   check("csv derives adr", m.adr, Number((8843.05 / 67).toFixed(10)));
+}
+
+// ── Hotel matching ────────────────────────────────────────────────────────
+console.log("\nHotel matching");
+{
+  const owned = [
+    { hotel_id: "cw", name: "Candlewood Suites Pensacola University Area by IHG" },
+    { hotel_id: "hiex", name: "Holiday Inn Express & Suites Destin E - Commons Mall" },
+  ];
+  const hiex = read("ihg-gm-report.txt").replace(
+    /Candlewood Suites Pensacola - University Area/,
+    "Holiday Inn Express and Suites Destin E - Commons Mall Area"
+  );
+  check(
+    "Destin report goes to the Holiday Inn Express",
+    matchHotel(hiex, "HIEx-Destin_Managers Flash", owned)?.hotelId,
+    "hiex"
+  );
+
+  // The exact mis-file that happened in production: a one-word competitor
+  // name outscoring the real, longer property name.
+  const withDecoy = [...owned, { hotel_id: "decoy", name: "Destin Inn & Suites" }];
+  check(
+    "a one-word competitor name does not steal it",
+    matchHotel(hiex, "HIEx-Destin_Managers Flash", withDecoy)?.hotelId,
+    "hiex"
+  );
+
+  check(
+    "Pensacola report still goes to Candlewood",
+    matchHotel(read("ihg-gm-report.txt"), "Candlewood Suites_Managers Flash", owned)?.hotelId,
+    "cw"
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

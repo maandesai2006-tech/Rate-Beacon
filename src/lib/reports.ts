@@ -518,7 +518,7 @@ export function matchHotel(
     "resort", "express", "area", "north", "south", "east", "west", "downtown",
   ]);
 
-  let best: { hotelId: string; matchedBy: string; score: number } | null = null;
+  let best: { hotelId: string; matchedBy: string; score: number; hits: number } | null = null;
   for (const h of hotels) {
     const name = h.name.toLowerCase();
     if (haystack.includes(name)) {
@@ -531,8 +531,21 @@ export function matchHotel(
     if (words.length === 0) continue;
     const hits = words.filter((w) => haystack.includes(w));
     const score = hits.length / words.length;
-    if (score >= 0.6 && (!best || score > best.score)) {
-      best = { hotelId: h.hotel_id, matchedBy: `keywords ${hits.join(", ")}`, score };
+    if (score < 0.6) continue;
+
+    // A one-word name like "Destin Inn & Suites" scores a perfect 1.0 against
+    // any Destin report, and would beat a four-word name that also matched
+    // perfectly. Break ties on the number of distinctive words actually
+    // matched, so the more specific name wins.
+    const better =
+      !best || hits.length > best.hits || (hits.length === best.hits && score > best.score);
+    if (better) {
+      best = {
+        hotelId: h.hotel_id,
+        matchedBy: `keywords ${hits.join(", ")}`,
+        score,
+        hits: hits.length,
+      };
     }
   }
   return best ? { hotelId: best.hotelId, matchedBy: best.matchedBy } : null;

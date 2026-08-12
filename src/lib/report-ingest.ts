@@ -31,10 +31,16 @@ export async function ingestReport(
   supa: SupabaseClient,
   input: IngestInput
 ): Promise<IngestResult> {
+  // Only hotels this profile actually operates are candidates. A manager's
+  // report comes out of your own PMS; it is never a competitor's. Matching
+  // against the whole tracked set is how a Holiday Inn Express night audit
+  // ended up filed under "Destin Inn & Suites" — the competitor's only
+  // distinctive word is "destin", which the report obviously contains.
   const { data: tracked } = await supa
     .from("profile_hotels")
     .select("hotel_id, hotels(name)")
     .eq("profile_id", input.profileId)
+    .eq("is_mine", true)
     .returns<{ hotel_id: string; hotels: { name: string } | null }[]>();
 
   const candidates = (tracked ?? []).map((t) => ({
