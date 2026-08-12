@@ -406,3 +406,25 @@ h1, h2, h3, h4, h5, h6 {
 }
 .rb-pin__star { font-size: 10px; }
 
+
+/* ── Weather overlay ────────────────────────────────────────────────────────
+   OpenWeather's rasters are tuned for a white basemap and run hot next to
+   this palette. Rather than reject them, they are pulled toward the app's
+   feel: chroma eased off, the blue end lifted a touch, and the whole pane
+   softened so streets and price pins stay readable through it. Tiles fade in
+   rather than popping, which is what makes the hour-to-hour change read as
+   motion instead of a flicker. */
+.rb-weather-pane {
+  filter: saturate(0.82) contrast(0.94) brightness(1.04) hue-rotate(-6deg);
+  mix-blend-mode: multiply;
+  transition: opacity 0.4s var(--ease);
+}
+.rb-weather-pane .leaflet-tile {
+  transition: opacity 0.45s var(--ease);
+}
+/* On a dark basemap, multiply would bury the overlay; screen keeps the
+   colours luminous against it and the chroma can carry more. */
+:root[data-theme="dark"] .rb-weather-pane {
+  filter: saturate(0.95) contrast(1.02) brightness(1.12) hue-rotate(-6deg);
+  mix-blend-mode: screen;
+}

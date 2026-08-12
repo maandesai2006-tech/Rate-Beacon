@@ -10,10 +10,10 @@ import type { GridRow, Hotel, MapPlace } from "@/lib/types";
 //   places   restaurants, attractions and shops from OpenStreetMap, loaded
 //            for whatever the map is showing and refreshed as you pan
 //   traffic  live flow tiles, when a free TomTom key is configured
-//   weather  twelve hours of forecast over the visible area, played back
+//   weather  OpenWeather's map rasters over 12h, 24h or 7 days, played back
 //
-// Everything except traffic is keyless. Traffic has no keyless source worth
-// having, so the layer says so rather than drawing something invented.
+// Places are keyless. Traffic and weather take keys, both on free tiers, and
+// both say so plainly when the key is missing rather than drawing a stand-in.
 
 type PoiKind = "lodging" | "food" | "attraction" | "shop";
 
@@ -49,7 +49,18 @@ interface WeatherField {
 }
 
 type WeatherRange = "12h" | "24h" | "7d";
-type WeatherMetric = "precipitation" | "temperature";
+type WeatherMetric = "precipitation" | "temperature" | "clouds" | "wind";
+
+// Enough that the base map's streets and the price pills stay readable
+// through it, which is the difference between an overlay and a wallpaper.
+const WEATHER_OPACITY = 0.62;
+
+const METRIC_LABEL: Record<WeatherMetric, string> = {
+  precipitation: "Rain",
+  temperature: "Temperature",
+  clouds: "Clouds",
+  wind: "Wind",
+};
 
 const RANGE_LABEL: Record<WeatherRange, string> = {
   "12h": "12 hours",
@@ -109,7 +120,13 @@ export default function RateMap({
   // as an animation instead of a slideshow.
   const [cursor, setCursor] = useState(0);
   const cursorRef = useRef(0);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // One cached tile layer per forecast hour, so replaying does not refetch.
+  const weatherTilesRef = useRef<Map<number, TileLayer>>(new Map());
+  const [capability, setCapability] = useState<{
+    configured: boolean;
+    forecast: boolean;
+    detail: string | null;
+  } | null>(null);
 
   const hotelById = new Map(hotels.map((h) => [h.hotel_id, h]));
 
@@ -186,6 +203,12 @@ export default function RateMap({
         attributionControl: true,
       }).setView([30.47, -87.2], 12);
       mapRef.current = map;
+      // Its own pane: above the base tiles, below the price pins, and
+      // addressable from CSS so the palette can be tuned to this map.
+      const pane = map.createPane("weather");
+      pane.style.zIndex = "350";
+      pane.style.pointerEvents = "none";
+      pane.classList.add("rb-weather-pane");
       poiLayerRef.current = L.layerGroup().addTo(map);
       setReady(true);
     })();
@@ -386,44 +409,64 @@ export default function RateMap({
   }, [ready, signature, theme]);
 
   // ── Weather field ───────────────────────────────────────────────────────
-  const loadWeather = useCallback(
-    async (next: WeatherRange) => {
-      const map = mapRef.current;
-      if (!map) return;
-      const b = map.getBounds();
-      const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]
-        .map((n) => n.toFixed(4))
-        .join(",");
-      setWeatherBusy(true);
-      setWeatherNote(null);
-      try {
-        const res = await fetch(`/api/map/weather?bbox=${bbox}&range=${next}`);
-        const j = (await res.json()) as Partial<WeatherField> & { error?: string };
-        if (j.error || !j.frames?.length || !j.bbox || !j.grid) {
-          setWeatherNote(j.error ?? "No forecast came back for this area.");
-          return;
-        }
-        setField({ range: next, grid: j.grid, bbox: j.bbox, frames: j.frames });
-        cursorRef.current = 0;
-        setCursor(0);
-        setPlaying(true);
-      } catch (e) {
-        setWeatherNote((e as Error).message);
-      } finally {
-        setWeatherBusy(false);
-      }
-    },
-    []
-  );
+  // ── Weather overlay ─────────────────────────────────────────────────────
+  // The picture comes from OpenWeather's map tiles — the same multicolour
+  // rasters a weather app draws — proxied so the key stays server-side. The
+  // numbers in the readout come from Open-Meteo, which gives exact values per
+  // hour that a tile image cannot.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/map/weather/capability")
+      .then((r) => r.json())
+      .then((j: { configured?: boolean; forecast?: boolean; detail?: string }) => {
+        if (cancelled) return;
+        setCapability({
+          configured: Boolean(j.configured),
+          forecast: Boolean(j.forecast),
+          detail: j.detail ?? null,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  // Advance on the animation frame rather than a timer, so the field drifts
-  // smoothly and pauses cleanly at the end of the range.
+  const loadWeather = useCallback(async (next: WeatherRange) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const b = map.getBounds();
+    const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()]
+      .map((n) => n.toFixed(4))
+      .join(",");
+    setWeatherBusy(true);
+    setWeatherNote(null);
+    try {
+      const res = await fetch(`/api/map/weather?bbox=${bbox}&range=${next}`);
+      const j = (await res.json()) as Partial<WeatherField> & { error?: string };
+      if (j.error || !j.frames?.length || !j.bbox || !j.grid) {
+        setWeatherNote(j.error ?? "No forecast came back for this area.");
+        return;
+      }
+      setField({ range: next, grid: j.grid, bbox: j.bbox, frames: j.frames });
+      cursorRef.current = 0;
+      setCursor(0);
+      setPlaying(true);
+    } catch (e) {
+      setWeatherNote((e as Error).message);
+    } finally {
+      setWeatherBusy(false);
+    }
+  }, []);
+
+  // Advance on the animation frame rather than a timer, so the clock runs
+  // smoothly and stops cleanly at the end of the range.
   useEffect(() => {
     if (!playing || !field) return;
     const last = field.frames.length - 1;
-    // A day of forecast should take about the same wall time whichever range
-    // is on, so seven days plays faster per frame than twelve hours.
-    const perFrame = field.range === "7d" ? 1100 : 700;
+    // A day of forecast takes roughly the same wall time whichever range is
+    // on, so seven days plays faster per frame than twelve hours.
+    const perFrame = field.range === "7d" ? 1100 : 750;
     let raf = 0;
     let prev = performance.now();
     const tick = (now: number) => {
@@ -444,91 +487,73 @@ export default function RateMap({
     return () => cancelAnimationFrame(raf);
   }, [playing, field]);
 
-  // Paint the field. A GRID×GRID image scaled up with smoothing gives a
-  // continuous surface — the same trick a radar overlay uses — instead of the
-  // discrete blobs a marker per sample produces.
-  const paint = useCallback(() => {
-    const canvas = canvasRef.current;
-    const map = mapRef.current;
-    if (!canvas || !map) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const size = map.getSize();
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== size.x * dpr || canvas.height !== size.y * dpr) {
-      canvas.width = size.x * dpr;
-      canvas.height = size.y * dpr;
-      canvas.style.width = `${size.x}px`;
-      canvas.style.height = `${size.y}px`;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, size.x, size.y);
-    if (!field) return;
-
-    const { frames, grid, bbox } = field;
-    const i0 = Math.floor(cursorRef.current);
-    const i1 = Math.min(i0 + 1, frames.length - 1);
-    const t = cursorRef.current - i0;
-    const a = frames[i0];
-    const b = frames[i1];
-    if (!a || !b) return;
-
-    // Build the low-resolution image, one pixel per sample.
-    const img = ctx.createImageData(grid, grid);
-    for (let k = 0; k < grid * grid; k++) {
-      const va = valueOf(a.cells[k], metric);
-      const vb = valueOf(b.cells[k], metric);
-      const v = va == null ? vb : vb == null ? va : va + (vb - va) * t;
-      const [r, g, bl, alpha] = v == null ? [0, 0, 0, 0] : colorFor(v, metric);
-      img.data[k * 4] = r;
-      img.data[k * 4 + 1] = g;
-      img.data[k * 4 + 2] = bl;
-      img.data[k * 4 + 3] = alpha;
-    }
-
-    // Where the sampled area sits on screen right now. The samples are cell
-    // centres, so the painted rect is inset by half a cell on every side.
-    const nw = map.latLngToContainerPoint([bbox.north, bbox.west]);
-    const se = map.latLngToContainerPoint([bbox.south, bbox.east]);
-    const halfW = (se.x - nw.x) / grid / 2;
-    const halfH = (se.y - nw.y) / grid / 2;
-
-    const off = document.createElement("canvas");
-    off.width = grid;
-    off.height = grid;
-    off.getContext("2d")?.putImageData(img, 0, 0);
-
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(
-      off,
-      nw.x + halfW,
-      nw.y + halfH,
-      se.x - nw.x - halfW * 2,
-      se.y - nw.y - halfH * 2
-    );
-  }, [field, metric]);
-
+  // One tile layer per forecast hour, created lazily and kept. Crossfading
+  // between two raster layers is how a weather app animates radar; swapping a
+  // single layer's URL would blink white while the new tiles load.
+  const frameIndex = Math.round(cursor);
   useEffect(() => {
-    paint();
-  }, [paint, cursor]);
+    if (!ready || !field) return;
+    let cancelled = false;
 
-  // Keep the field pinned to the ground while the map moves.
-  useEffect(() => {
-    if (!ready) return;
-    const map = mapRef.current;
-    if (!map) return;
-    const onMove = () => paint();
-    map.on("move zoom viewreset resize", onMove);
+    (async () => {
+      const L = (await import("leaflet")).default;
+      const map = mapRef.current;
+      if (cancelled || !map) return;
+
+      const layerFor = (index: number) => {
+        const existing = weatherTilesRef.current.get(index);
+        if (existing) return existing;
+        const frame = field.frames[index];
+        if (!frame) return null;
+        const stamp = Math.floor(new Date(frame.time).getTime() / 1000);
+        // Without forecast tiles there is only ever one image, so every frame
+        // shares it rather than requesting the same picture repeatedly.
+        const query = capability?.forecast ? `?date=${stamp}` : "";
+        const layer = L.tileLayer(`/api/map/weather/tile/${metric}/{z}/{x}/{y}${query}`, {
+          maxZoom: 19,
+          opacity: 0,
+          pane: "weather",
+          attribution: '&copy; <a href="https://openweathermap.org/">OpenWeather</a>',
+        }).addTo(map);
+        weatherTilesRef.current.set(index, layer);
+        return layer;
+      };
+
+      const current = layerFor(frameIndex);
+      if (current) current.setOpacity(WEATHER_OPACITY);
+      // Warm the next hour so the crossfade has tiles ready to show.
+      if (capability?.forecast) layerFor(frameIndex + 1);
+
+      for (const [index, layer] of weatherTilesRef.current) {
+        if (index !== frameIndex) layer.setOpacity(0);
+      }
+    })();
+
     return () => {
-      map.off("move zoom viewreset resize", onMove);
+      cancelled = true;
     };
-  }, [ready, paint]);
+  }, [ready, field, frameIndex, metric, capability]);
+
+  // Changing metric or clearing the overlay discards every cached layer;
+  // they are keyed by hour, not by metric.
+  const clearWeatherLayers = useCallback(() => {
+    const map = mapRef.current;
+    for (const layer of weatherTilesRef.current.values()) {
+      if (map) map.removeLayer(layer);
+    }
+    weatherTilesRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    clearWeatherLayers();
+  }, [metric, clearWeatherLayers]);
+
+  useEffect(() => clearWeatherLayers, [clearWeatherLayers]);
 
   function stopWeather() {
     setPlaying(false);
     setField(null);
+    clearWeatherLayers();
     cursorRef.current = 0;
     setCursor(0);
   }
@@ -607,22 +632,6 @@ export default function RateMap({
             background: "var(--surface-2)",
           }}
         />
-        {/* The field is painted above the tiles but below the controls, and
-            never takes pointer events, so the map stays draggable through it. */}
-        <canvas
-          ref={canvasRef}
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            borderRadius: 10,
-            pointerEvents: "none",
-            zIndex: 400,
-            opacity: field ? 1 : 0,
-            transition: "opacity 0.35s var(--ease)",
-            mixBlendMode: "multiply",
-          }}
-        />
       </div>
 
       {/* Forecast playback, below the map. The field only exists while it is
@@ -652,7 +661,7 @@ export default function RateMap({
             <span className="mx-1" style={{ color: "var(--border)" }} aria-hidden>
               |
             </span>
-            {(["precipitation", "temperature"] as WeatherMetric[]).map((m) => (
+            {(Object.keys(METRIC_LABEL) as WeatherMetric[]).map((m) => (
               <button
                 key={m}
                 onClick={() => setMetric(m)}
@@ -663,7 +672,7 @@ export default function RateMap({
                     : undefined
                 }
               >
-                {m === "precipitation" ? "Rain" : "Temperature"}
+                {METRIC_LABEL[m]}
               </button>
             ))}
           </>
@@ -674,10 +683,18 @@ export default function RateMap({
             {weatherBusy
               ? "Loading forecast…"
               : (weatherNote ??
-                "Forecast across the area on screen, from Open-Meteo.")}
+                "Weather overlay from OpenWeather, readings from Open-Meteo.")}
           </span>
         )}
       </div>
+
+      {field && capability && !capability.forecast && (
+        <p className="mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {capability.configured
+            ? "The overlay shows current conditions — this OpenWeather plan does not include forecast tiles, so the map does not change as the clock advances. The readings beside it are real forecast values."
+            : "Set OPENWEATHER_API_KEY on the deployment to draw the weather overlay."}
+        </p>
+      )}
 
       {field && (
         <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -699,6 +716,7 @@ export default function RateMap({
             max={field.frames.length - 1}
             step={0.01}
             value={cursor}
+            disabled={capability != null && !capability.forecast}
             onChange={(e) => {
               setPlaying(false);
               const v = Number(e.target.value);
@@ -714,7 +732,6 @@ export default function RateMap({
           >
             {activeFrame ? frameLabel(activeFrame.time, field.range) : ""}
           </span>
-          <WeatherLegend metric={metric} />
           {activeFrame && <WeatherSummary frame={activeFrame} range={field.range} />}
           <button onClick={stopWeather} className="btn-ghost px-3 py-1.5 text-[12px]">
             Clear
@@ -722,88 +739,6 @@ export default function RateMap({
         </div>
       )}
     </div>
-  );
-}
-
-function valueOf(cell: WeatherCell | undefined, metric: WeatherMetric): number | null {
-  if (!cell) return null;
-  if (metric === "temperature") return cell.temperature;
-  // Rain reads better as likelihood than as depth: an inch of rain and a 90%
-  // chance of drizzle are different facts, and the chance is the one a hotel
-  // acts on. Fall back to measured depth when the chance is absent.
-  if (cell.precipitationChance != null) return cell.precipitationChance;
-  return cell.precipitation != null ? Math.min(100, cell.precipitation * 200) : null;
-}
-
-/**
- * Colour for one sample, as premultiplied RGBA bytes.
- *
- * Rain is a magnitude, so it takes one hue running light to dark with alpha
- * fading to nothing at zero — a dry map stays clear rather than being washed
- * blue. Temperature is a two-ended scale, so it takes the cool/warm pair with
- * a neutral middle. Neither is a rainbow.
- */
-function colorFor(value: number, metric: WeatherMetric): [number, number, number, number] {
-  if (metric === "precipitation") {
-    const t = Math.min(1, Math.max(0, value / 100));
-    // Below about 10% there is nothing worth drawing.
-    if (t < 0.1) return [0, 0, 0, 0];
-    const eased = (t - 0.1) / 0.9;
-    const stops: [number, number, number][] = [
-      [186, 222, 246],
-      [116, 178, 232],
-      [52, 128, 208],
-      [26, 78, 158],
-    ];
-    const [r, g, b] = rampAt(stops, eased);
-    return [r, g, b, Math.round(40 + eased * 165)];
-  }
-
-  // Fahrenheit, on the band a guest actually experiences.
-  const t = Math.min(1, Math.max(0, (value - 30) / 70));
-  const stops: [number, number, number][] = [
-    [70, 130, 210],
-    [150, 195, 235],
-    [242, 240, 232],
-    [235, 170, 90],
-    [214, 74, 62],
-  ];
-  const [r, g, b] = rampAt(stops, t);
-  return [r, g, b, 150];
-}
-
-function rampAt(stops: [number, number, number][], t: number): [number, number, number] {
-  const x = t * (stops.length - 1);
-  const i = Math.min(stops.length - 2, Math.floor(x));
-  const f = x - i;
-  const a = stops[i];
-  const b = stops[i + 1];
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * f),
-    Math.round(a[1] + (b[1] - a[1]) * f),
-    Math.round(a[2] + (b[2] - a[2]) * f),
-  ];
-}
-
-function WeatherLegend({ metric }: { metric: WeatherMetric }) {
-  const steps = metric === "precipitation" ? [15, 40, 65, 90] : [40, 55, 70, 85, 95];
-  return (
-    <span className="inline-flex items-center gap-1.5" aria-hidden>
-      {steps.map((v) => {
-        const [r, g, b, a] = colorFor(v, metric);
-        return (
-          <span
-            key={v}
-            className="inline-block h-3 w-5 rounded-sm"
-            style={{ background: `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(2)})` }}
-            title={metric === "precipitation" ? `${v}% chance` : `${v}°F`}
-          />
-        );
-      })}
-      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-        {metric === "precipitation" ? "rain chance" : "°F"}
-      </span>
-    </span>
   );
 }
 
