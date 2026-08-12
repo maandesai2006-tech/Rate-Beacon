@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { hotelsNear } from "@/lib/overpass";
+import { hotelsNear, lastOverpassErrors } from "@/lib/overpass";
 
 // A one-click health report, in plain language. Every external dependency is
 // probed from the server (they are not reachable from a browser), so the
@@ -113,7 +113,9 @@ export async function GET() {
     detail:
       osm.length > 0
         ? `Responding in ${Date.now() - t0}ms, ${osm.length} sample hotels nearby.`
-        : "No hotels returned from either Overpass mirror.",
+        : lastOverpassErrors.length > 0
+          ? `Every Overpass mirror refused: ${lastOverpassErrors.join(" | ")}`
+          : "No hotels found near the test point, and no mirror reported an error.",
   });
 
   // 5. Geocoding

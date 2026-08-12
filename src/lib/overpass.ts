@@ -12,10 +12,25 @@ export interface NearbyPlace {
   stars: number | null;
 }
 
+// The main instance rate-limits datacenter IPs hard, and a Vercel function is
+// exactly that, so the mirrors are not a nicety — they are usually what
+// answers. Ordered cheapest-to-rudest.
 const ENDPOINTS = [
-  "https://overpass-api.de/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.osm.ch/api/interpreter",
+  "https://overpass-api.de/api/interpreter",
 ];
+
+/**
+ * Why the last Overpass call failed, per endpoint.
+ *
+ * Every mirror returning nothing used to be indistinguishable from the area
+ * genuinely having no hotels, which made the system check report "no hotels
+ * returned" for what was really a 429. Diagnostics are recorded here so the
+ * check can say what actually happened.
+ */
+export let lastOverpassErrors: string[] = [];
 
 export async function hotelsNear(
   lat: number,
@@ -32,50 +47,24 @@ export async function hotelsNear(
     out center ${limit};
   `;
 
-  for (const endpoint of ENDPOINTS) {
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "RateBeacon/1.0 (hotel rate dashboard)",
-        },
-        body: `data=${encodeURIComponent(query)}`,
-        cache: "no-store",
-      });
-      if (!res.ok) continue;
-      const json = (await res.json()) as {
-        elements?: {
-          type: string;
-          id: number;
-          lat?: number;
-          lon?: number;
-          center?: { lat: number; lon: number };
-          tags?: Record<string, string>;
-        }[];
-      };
-      const out: NearbyPlace[] = [];
-      for (const el of json.elements ?? []) {
-        const name = el.tags?.name;
-        const latitude = el.lat ?? el.center?.lat;
-        const longitude = el.lon ?? el.center?.lon;
-        if (!name || latitude == null || longitude == null) continue;
-        const stars = el.tags?.stars ? parseFloat(el.tags.stars) : null;
-        out.push({
-          osmId: `${el.type}/${el.id}`,
-          name,
-          latitude,
-          longitude,
-          brand: el.tags?.brand ?? el.tags?.operator ?? null,
-          stars: stars != null && !Number.isNaN(stars) ? stars : null,
-        });
-      }
-      return out;
-    } catch {
-      // Try the next mirror.
-    }
+  const elements = await runOverpass(query);
+  const out: NearbyPlace[] = [];
+  for (const el of elements) {
+    const name = el.tags?.name;
+    const latitude = el.lat ?? el.center?.lat;
+    const longitude = el.lon ?? el.center?.lon;
+    if (!name || latitude == null || longitude == null) continue;
+    const stars = el.tags?.stars ? parseFloat(el.tags.stars) : null;
+    out.push({
+      osmId: `${el.type}/${el.id}`,
+      name,
+      latitude,
+      longitude,
+      brand: el.tags?.brand ?? el.tags?.operator ?? null,
+      stars: stars != null && !Number.isNaN(stars) ? stars : null,
+    });
   }
-  return [];
+  return out;
 }
 
 // ── Points of interest around the hotels ─────────────────────────────────
@@ -204,24 +193,43 @@ interface OverpassElement {
 }
 
 async function runOverpass(query: string): Promise<OverpassElement[]> {
+  const errors: string[] = [];
   for (const endpoint of ENDPOINTS) {
+    const host = new URL(endpoint).host;
     try {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "RateBeacon/1.0 (hotel rate dashboard)",
+          // Overpass asks for a contactable agent; anonymous traffic is the
+          // first thing its mirrors throttle.
+          "User-Agent": "RateBeacon/1.0 (+https://github.com/maandesai2006-tech/rate-beacon)",
+          Accept: "application/json",
         },
         body: `data=${encodeURIComponent(query)}`,
         cache: "no-store",
+        signal: AbortSignal.timeout(25_000),
       });
-      if (!res.ok) continue;
-      const json = (await res.json()) as { elements?: OverpassElement[] };
+      if (!res.ok) {
+        errors.push(`${host}: HTTP ${res.status}${res.status === 429 ? " (rate limited)" : ""}`);
+        continue;
+      }
+      const text = await res.text();
+      let json: { elements?: OverpassElement[] };
+      try {
+        json = JSON.parse(text);
+      } catch {
+        // A mirror under load answers with an HTML error page and a 200.
+        errors.push(`${host}: non-JSON reply (${text.slice(0, 80).replace(/\s+/g, " ")})`);
+        continue;
+      }
+      lastOverpassErrors = errors;
       return json.elements ?? [];
-    } catch {
-      // Try the next mirror.
+    } catch (e) {
+      errors.push(`${host}: ${(e as Error).name === "TimeoutError" ? "timed out" : (e as Error).message}`);
     }
   }
+  lastOverpassErrors = errors;
   return [];
 }
 

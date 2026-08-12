@@ -415,16 +415,30 @@ h1, h2, h3, h4, h5, h6 {
    rather than popping, which is what makes the hour-to-hour change read as
    motion instead of a flicker. */
 .rb-weather-pane {
+  transition: opacity 0.4s var(--ease);
+}
+/* RainViewer's Dark Sky ramp is already restrained, and radar covers only part
+   of the frame, so it keeps its chroma and only loses a little weight. */
+.rb-weather-pane[data-source="radar"] {
+  filter: saturate(1.02) contrast(1.02);
+  mix-blend-mode: multiply;
+}
+/* OpenWeather's rasters are drawn for a white basemap, cover the whole frame
+   and run hot beside this palette, so they get pulled back hard. */
+.rb-weather-pane[data-source="openweather"] {
   filter: saturate(0.82) contrast(0.94) brightness(1.04) hue-rotate(-6deg);
   mix-blend-mode: multiply;
-  transition: opacity 0.4s var(--ease);
 }
 .rb-weather-pane .leaflet-tile {
   transition: opacity 0.45s var(--ease);
 }
 /* On a dark basemap, multiply would bury the overlay; screen keeps the
    colours luminous against it and the chroma can carry more. */
-:root[data-theme="dark"] .rb-weather-pane {
+:root[data-theme="dark"] .rb-weather-pane[data-source="radar"] {
+  filter: saturate(1.1) contrast(1.05) brightness(1.15);
+  mix-blend-mode: screen;
+}
+:root[data-theme="dark"] .rb-weather-pane[data-source="openweather"] {
   filter: saturate(0.95) contrast(1.02) brightness(1.12) hue-rotate(-6deg);
   mix-blend-mode: screen;
 }

@@ -10,10 +10,12 @@ import type { GridRow, Hotel, MapPlace } from "@/lib/types";
 //   places   restaurants, attractions and shops from OpenStreetMap, loaded
 //            for whatever the map is showing and refreshed as you pan
 //   traffic  live flow tiles, when a free TomTom key is configured
-//   weather  OpenWeather's map rasters over 12h, 24h or 7 days, played back
+//   weather  RainViewer radar (keyless, and the one free source that really
+//            animates) plus OpenWeather's temperature and cloud rasters
 //
-// Places are keyless. Traffic and weather take keys, both on free tiers, and
-// both say so plainly when the key is missing rather than drawing a stand-in.
+// Where a layer needs a key it says so rather than drawing a stand-in, and
+// where a free plan cannot animate, the UI says that too instead of replaying
+// one image behind a moving clock.
 
 type PoiKind = "lodging" | "food" | "attraction" | "shop";
 
@@ -49,18 +51,35 @@ interface WeatherField {
 }
 
 type WeatherRange = "12h" | "24h" | "7d";
-type WeatherMetric = "precipitation" | "temperature" | "clouds" | "wind";
+type WeatherMetric = "radar" | "precipitation" | "temperature" | "clouds";
 
-// Enough that the base map's streets and the price pills stay readable
-// through it, which is the difference between an overlay and a wallpaper.
-const WEATHER_OPACITY = 0.62;
+// RainViewer publishes global radar composites — free, no key, no signup —
+// covering roughly the last two hours plus a 30-minute nowcast. It is the one
+// free source that genuinely animates, which is why it is the default: the
+// OpenWeather layers on a free plan are a single current-conditions image.
+const RAINVIEWER_INDEX = "https://api.rainviewer.com/public/weather-maps.json";
+// Colour scheme 8 is RainViewer's "Dark Sky" palette — the restrained modern
+// ramp, rather than the saturated NEXRAD greens that would fight this UI.
+// Trailing flags are smoothing and snow-shading, both on.
+const RADAR_SCHEME = 8;
+
+// Radar covers a small part of the frame and is already a restrained palette,
+// so it can sit stronger. The OpenWeather rasters cover everything and would
+// become wallpaper at the same value.
+const RADAR_OPACITY = 0.78;
+const WEATHER_OPACITY = 0.58;
 
 const METRIC_LABEL: Record<WeatherMetric, string> = {
+  radar: "Radar",
   precipitation: "Rain",
   temperature: "Temperature",
   clouds: "Clouds",
-  wind: "Wind",
 };
+
+interface RadarFrame {
+  time: number;
+  path: string;
+}
 
 const RANGE_LABEL: Record<WeatherRange, string> = {
   "12h": "12 hours",
@@ -111,7 +130,7 @@ export default function RateMap({
 
   const [field, setField] = useState<WeatherField | null>(null);
   const [range, setRange] = useState<WeatherRange>("12h");
-  const [metric, setMetric] = useState<WeatherMetric>("precipitation");
+  const [metric, setMetric] = useState<WeatherMetric>("radar");
   const [playing, setPlaying] = useState(false);
   const [weatherBusy, setWeatherBusy] = useState(false);
   const [weatherNote, setWeatherNote] = useState<string | null>(null);
@@ -127,6 +146,7 @@ export default function RateMap({
     forecast: boolean;
     detail: string | null;
   } | null>(null);
+  const [radar, setRadar] = useState<{ host: string; frames: RadarFrame[] } | null>(null);
 
   const hotelById = new Map(hotels.map((h) => [h.hotel_id, h]));
 
@@ -432,6 +452,30 @@ export default function RateMap({
     };
   }, []);
 
+  // RainViewer's index lists the timestamps it has composites for. It is
+  // keyless and CORS-open, so the browser fetches it directly.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(RAINVIEWER_INDEX)
+      .then((r) => r.json())
+      .then((j: { host?: string; radar?: { past?: RadarFrame[]; nowcast?: RadarFrame[] } }) => {
+        if (cancelled || !j.host) return;
+        const frames = [...(j.radar?.past ?? []), ...(j.radar?.nowcast ?? [])];
+        if (!frames.length) return;
+        setRadar({ host: j.host, frames });
+        // Start on the most recent real observation rather than two hours ago.
+        const nowIndex = Math.max(0, (j.radar?.past?.length ?? 1) - 1);
+        cursorRef.current = nowIndex;
+        setCursor(nowIndex);
+      })
+      .catch(() => {
+        // Radar simply will not be offered; the OpenWeather layers still are.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const loadWeather = useCallback(async (next: WeatherRange) => {
     const map = mapRef.current;
     if (!map) return;
@@ -459,14 +503,19 @@ export default function RateMap({
     }
   }, []);
 
+  // Radar animates over its own timestamps; the other layers animate over the
+  // forecast hours the readout is showing.
+  const isRadar = metric === "radar" && radar != null;
+  const timelineLength = isRadar ? radar.frames.length : (field?.frames.length ?? 0);
+
   // Advance on the animation frame rather than a timer, so the clock runs
   // smoothly and stops cleanly at the end of the range.
   useEffect(() => {
-    if (!playing || !field) return;
-    const last = field.frames.length - 1;
-    // A day of forecast takes roughly the same wall time whichever range is
-    // on, so seven days plays faster per frame than twelve hours.
-    const perFrame = field.range === "7d" ? 1100 : 750;
+    if (!playing || timelineLength < 2) return;
+    const last = timelineLength - 1;
+    // Radar reads as motion at roughly 400ms a frame; a forecast day should
+    // take about the same wall time whichever range is on.
+    const perFrame = isRadar ? 420 : field?.range === "7d" ? 1100 : 750;
     let raf = 0;
     let prev = performance.now();
     const tick = (now: number) => {
@@ -485,14 +534,14 @@ export default function RateMap({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, field]);
+  }, [playing, timelineLength, isRadar, field?.range]);
 
-  // One tile layer per forecast hour, created lazily and kept. Crossfading
-  // between two raster layers is how a weather app animates radar; swapping a
-  // single layer's URL would blink white while the new tiles load.
-  const frameIndex = Math.round(cursor);
+  // One tile layer per frame, created lazily and kept. Crossfading between two
+  // raster layers is how a weather app animates radar; swapping a single
+  // layer's URL blinks white while the new tiles load.
+  const frameIndex = Math.min(Math.round(cursor), Math.max(0, timelineLength - 1));
   useEffect(() => {
-    if (!ready || !field) return;
+    if (!ready || timelineLength === 0) return;
     let cancelled = false;
 
     (async () => {
@@ -501,28 +550,44 @@ export default function RateMap({
       if (cancelled || !map) return;
 
       const layerFor = (index: number) => {
+        if (index < 0 || index >= timelineLength) return null;
         const existing = weatherTilesRef.current.get(index);
         if (existing) return existing;
-        const frame = field.frames[index];
-        if (!frame) return null;
-        const stamp = Math.floor(new Date(frame.time).getTime() / 1000);
-        // Without forecast tiles there is only ever one image, so every frame
-        // shares it rather than requesting the same picture repeatedly.
-        const query = capability?.forecast ? `?date=${stamp}` : "";
-        const layer = L.tileLayer(`/api/map/weather/tile/${metric}/{z}/{x}/{y}${query}`, {
+
+        let url: string;
+        let attribution: string;
+
+        if (isRadar) {
+          const frame = radar.frames[index];
+          if (!frame) return null;
+          // {size}/{z}/{x}/{y}/{colour}/{smooth}_{snow}.png
+          url = `${radar.host}${frame.path}/512/{z}/{x}/{y}/${RADAR_SCHEME}/1_1.png`;
+          attribution = '&copy; <a href="https://www.rainviewer.com/">RainViewer</a>';
+        } else {
+          const frame = field?.frames[index];
+          if (!frame) return null;
+          const stamp = Math.floor(new Date(frame.time).getTime() / 1000);
+          // Without forecast tiles there is only ever one image, so every
+          // frame shares it rather than refetching the same picture.
+          const query = capability?.forecast ? `?date=${stamp}` : "";
+          url = `/api/map/weather/tile/${metric}/{z}/{x}/{y}${query}`;
+          attribution = '&copy; <a href="https://openweathermap.org/">OpenWeather</a>';
+        }
+
+        const layer = L.tileLayer(url, {
           maxZoom: 19,
           opacity: 0,
           pane: "weather",
-          attribution: '&copy; <a href="https://openweathermap.org/">OpenWeather</a>',
+          attribution,
         }).addTo(map);
         weatherTilesRef.current.set(index, layer);
         return layer;
       };
 
       const current = layerFor(frameIndex);
-      if (current) current.setOpacity(WEATHER_OPACITY);
-      // Warm the next hour so the crossfade has tiles ready to show.
-      if (capability?.forecast) layerFor(frameIndex + 1);
+      if (current) current.setOpacity(isRadar ? RADAR_OPACITY : WEATHER_OPACITY);
+      // Warm the next frame so the crossfade has tiles ready to show.
+      if (isRadar || capability?.forecast) layerFor(frameIndex + 1);
 
       for (const [index, layer] of weatherTilesRef.current) {
         if (index !== frameIndex) layer.setOpacity(0);
@@ -532,7 +597,7 @@ export default function RateMap({
     return () => {
       cancelled = true;
     };
-  }, [ready, field, frameIndex, metric, capability]);
+  }, [ready, timelineLength, frameIndex, metric, capability, isRadar, radar, field]);
 
   // Changing metric or clearing the overlay discards every cached layer;
   // they are keyed by hour, not by metric.
@@ -544,9 +609,20 @@ export default function RateMap({
     weatherTilesRef.current.clear();
   }, []);
 
+  // Layers are keyed by frame index, and the frames mean different things per
+  // metric, so switching metric must discard them.
   useEffect(() => {
     clearWeatherLayers();
+    cursorRef.current = 0;
+    setCursor(0);
   }, [metric, clearWeatherLayers]);
+
+  // The two sources need different colour treatment, so the pane records
+  // which one is painting and the stylesheet does the rest.
+  useEffect(() => {
+    const pane = mapRef.current?.getPane("weather");
+    if (pane) pane.dataset.source = isRadar ? "radar" : "openweather";
+  }, [isRadar, ready]);
 
   useEffect(() => clearWeatherLayers, [clearWeatherLayers]);
 
@@ -559,7 +635,16 @@ export default function RateMap({
   }
 
 
-  const activeFrame = field?.frames[Math.round(cursor)] ?? null;
+  const activeFrame = field?.frames[Math.min(Math.round(cursor), (field?.frames.length ?? 1) - 1)] ?? null;
+  const activeRadar = isRadar ? radar.frames[frameIndex] : null;
+  // Radar is the only free source that actually moves, so it drives its own
+  // clock; the OpenWeather layers borrow the forecast hours beside them.
+  const clockLabel = activeRadar
+    ? radarLabel(activeRadar.time)
+    : activeFrame && field
+      ? frameLabel(activeFrame.time, field.range)
+      : "";
+  const timelineReady = isRadar || Boolean(field);
 
   return (
     <div>
@@ -656,12 +741,14 @@ export default function RateMap({
           </button>
         ))}
 
-        {field && (
+        {(field || radar) && (
           <>
             <span className="mx-1" style={{ color: "var(--border)" }} aria-hidden>
               |
             </span>
-            {(Object.keys(METRIC_LABEL) as WeatherMetric[]).map((m) => (
+            {(Object.keys(METRIC_LABEL) as WeatherMetric[])
+              .filter((m) => m !== "radar" || radar != null)
+              .map((m) => (
               <button
                 key={m}
                 onClick={() => setMetric(m)}
@@ -683,24 +770,24 @@ export default function RateMap({
             {weatherBusy
               ? "Loading forecast…"
               : (weatherNote ??
-                "Weather overlay from OpenWeather, readings from Open-Meteo.")}
+                "Radar animates live; pick a range for forecast readings.")}
           </span>
         )}
       </div>
 
-      {field && capability && !capability.forecast && (
+      {!isRadar && capability && !capability.forecast && (
         <p className="mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
           {capability.configured
-            ? "The overlay shows current conditions — this OpenWeather plan does not include forecast tiles, so the map does not change as the clock advances. The readings beside it are real forecast values."
-            : "Set OPENWEATHER_API_KEY on the deployment to draw the weather overlay."}
+            ? "This layer is current conditions — the free OpenWeather plan has no forecast tiles, so it does not change as the clock advances. Switch to Radar for a genuinely animated overlay, or read the forecast numbers beside the clock."
+            : "Set OPENWEATHER_API_KEY on the deployment to draw the temperature and cloud layers."}
         </p>
       )}
 
-      {field && (
+      {timelineReady && timelineLength > 1 && (
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <button
             onClick={() => {
-              if (!playing && cursorRef.current >= field.frames.length - 1) {
+              if (!playing && cursorRef.current >= timelineLength - 1) {
                 cursorRef.current = 0;
                 setCursor(0);
               }
@@ -713,10 +800,10 @@ export default function RateMap({
           <input
             type="range"
             min={0}
-            max={field.frames.length - 1}
+            max={timelineLength - 1}
             step={0.01}
-            value={cursor}
-            disabled={capability != null && !capability.forecast}
+            value={Math.min(cursor, timelineLength - 1)}
+            disabled={!isRadar && capability != null && !capability.forecast}
             onChange={(e) => {
               setPlaying(false);
               const v = Number(e.target.value);
@@ -730,9 +817,9 @@ export default function RateMap({
             className="tabular-nums text-[13px] font-medium"
             style={{ color: "var(--text-primary)", minWidth: 92 }}
           >
-            {activeFrame ? frameLabel(activeFrame.time, field.range) : ""}
+            {clockLabel}
           </span>
-          {activeFrame && <WeatherSummary frame={activeFrame} range={field.range} />}
+          {activeFrame && field && <WeatherSummary frame={activeFrame} range={field.range} />}
           <button onClick={stopWeather} className="btn-ghost px-3 py-1.5 text-[12px]">
             Clear
           </button>
@@ -754,6 +841,13 @@ function WeatherSummary({ frame, range }: { frame: WeatherFrame; range: WeatherR
       {maxRain != null ? ` · rain to ${maxRain}%` : ""}
     </span>
   );
+}
+
+/** RainViewer stamps are unix seconds; what matters is the offset from now. */
+function radarLabel(unixSeconds: number): string {
+  const minutes = Math.round((unixSeconds * 1000 - Date.now()) / 60000);
+  if (Math.abs(minutes) <= 4) return "Now";
+  return minutes < 0 ? `${-minutes} min ago` : `+${minutes} min`;
 }
 
 function frameLabel(iso: string, range: WeatherRange): string {
