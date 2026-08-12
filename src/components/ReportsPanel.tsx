@@ -125,6 +125,22 @@ export default function ReportsPanel({
     loadMail();
   }, [load, loadMail]);
 
+  // Pick the backfill up where it stopped, without anyone having to know a
+  // button exists. The server reports "More still waiting" whenever a run hits
+  // its time budget with mail left, which is exactly the condition to resume.
+  const autoSyncStarted = useRef(false);
+  useEffect(() => {
+    if (autoSyncStarted.current || !profileId || !mail) return;
+    const outstanding = /more still waiting/i.test(mail.last_status ?? "");
+    const neverRun = !mail.last_sync_at;
+    if (!outstanding && !neverRun) return;
+    autoSyncStarted.current = true;
+    syncMail();
+    // syncMail is stable for the life of the panel; listing it would re-run
+    // this on every message it sets.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileId, mail]);
+
   async function connectMail() {
     if (!profileId) return;
     setMailBusy(true);
@@ -157,15 +173,36 @@ export default function ReportsPanel({
     let filed = 0;
     let firstSkip: string | null = null;
     try {
-      for (let pass = 0; pass < 200; pass++) {
-        const res = await fetch(`/api/reports/email/sync?profileId=${profileId}`, {
-          method: "POST",
-        });
-        const j = await res.json();
-        if (j.error) {
-          setMailMsg(j.error);
-          break;
+      let consecutiveFailures = 0;
+      for (let pass = 0; pass < 400; pass++) {
+        let j: {
+          error?: string;
+          scanned?: number;
+          filed?: number;
+          skipped?: string[];
+          hasMore?: boolean;
+        };
+        try {
+          const res = await fetch(`/api/reports/email/sync?profileId=${profileId}`, {
+            method: "POST",
+          });
+          j = await res.json();
+        } catch {
+          // A single 60-second function timeout used to abandon the whole
+          // backfill and leave the mailbox half-read. Progress is already
+          // committed per batch, so retrying simply resumes.
+          j = { error: "network", hasMore: true };
         }
+        if (j.error) {
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 3) {
+            setMailMsg(j.error === "network" ? "The mailbox sync keeps timing out. It will resume next time this tab is opened." : j.error);
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 1500 * consecutiveFailures));
+          continue;
+        }
+        consecutiveFailures = 0;
         scanned += j.scanned ?? 0;
         filed += j.filed ?? 0;
         if (!firstSkip && j.skipped?.length) firstSkip = j.skipped[0];

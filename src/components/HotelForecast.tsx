@@ -56,13 +56,17 @@ function temp(n: number | null): string {
   return n == null ? "—" : `${Math.round(n)}°`;
 }
 
-export default function HotelForecast({
-  profileId,
-  range,
-}: {
-  profileId: number | null;
-  range: ForecastRange;
-}) {
+const RANGE_LABEL: Record<ForecastRange, string> = {
+  "12h": "12 hours",
+  "24h": "24 hours",
+  "7d": "7 days",
+};
+
+export default function HotelForecast({ profileId }: { profileId: number | null }) {
+  // The range control lives here rather than on the map, because this is the
+  // only thing it changes. Sitting above the map it looked like it drove the
+  // overlay, which it never did.
+  const [range, setRange] = useState<ForecastRange>("12h");
   const [rows, setRows] = useState<HotelForecastRow[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -94,9 +98,23 @@ export default function HotelForecast({
 
   return (
     <section className="mt-6" aria-label="Forecast at your hotels">
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="kicker">Forecast at your hotels</h3>
-        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h3 className="kicker mr-1">Forecast at your hotels</h3>
+        {(Object.keys(RANGE_LABEL) as ForecastRange[]).map((r) => (
+          <button
+            key={r}
+            onClick={() => setRange(r)}
+            className="btn-ghost px-3 py-1.5 text-[12px]"
+            style={
+              range === r
+                ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
+                : undefined
+            }
+          >
+            {RANGE_LABEL[r]}
+          </button>
+        ))}
+        <span className="ml-auto text-xs" style={{ color: "var(--text-muted)" }}>
           {heading} · Open-Meteo
         </span>
       </div>
