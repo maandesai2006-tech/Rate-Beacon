@@ -162,7 +162,7 @@ export default function SetupPage() {
     const j = await res.json();
     setSaving(false);
     if (!res.ok) return setError(j.error ?? "Save failed");
-    router.push("/");
+    router.push("/app");
   }
 
   return (
@@ -386,7 +386,7 @@ export default function SetupPage() {
         <button onClick={save} disabled={saving} className="btn-accent px-5 py-2.5 disabled:opacity-45">
           {saving ? "Saving…" : "Save & open dashboard"}
         </button>
-        <button onClick={() => router.push("/")} className="btn-ghost px-5 py-2.5">
+        <button onClick={() => router.push("/app")} className="btn-ghost px-5 py-2.5">
           Cancel
         </button>
       </div>

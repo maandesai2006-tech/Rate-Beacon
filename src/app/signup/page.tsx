@@ -4,7 +4,7 @@ import AuthForm from "@/components/AuthForm";
 
 export const dynamic = "force-dynamic";
 
-export default function LoginPage() {
+export default function SignupPage() {
   return (
     <main
       className="flex min-h-screen flex-col items-center justify-center gap-6 p-6"
@@ -31,7 +31,7 @@ export default function LoginPage() {
       </Link>
 
       <Suspense fallback={null}>
-        <AuthForm mode="login" />
+        <AuthForm mode="signup" />
       </Suspense>
 
       <Link href="/demo" className="text-xs no-underline" style={{ color: "var(--text-muted)" }}>

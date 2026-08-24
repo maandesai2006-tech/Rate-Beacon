@@ -481,7 +481,7 @@ export default function Dashboard() {
           <button
             onClick={async () => {
               await fetch("/api/auth/logout", { method: "POST" });
-              window.location.href = "/login";
+              window.location.href = "/";
             }}
             className="btn-ghost px-3 py-1.5 text-[13px]"
           >
