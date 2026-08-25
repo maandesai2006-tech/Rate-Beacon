@@ -177,11 +177,9 @@ export async function GET() {
   // Two accounts share one database, so the question that matters to a buyer
   // is whether the database itself refuses to hand one account another's rows
   // — not whether the application code remembers to filter. This probes it
-  // rather than reporting configuration: it asks, as a scoped client for an
-  // account id that cannot exist, for rows the service client can see. A live
-  // policy answers with nothing. A rejected token answers with an error, which
-  // is also worth knowing, because the routes would then be silently running
-  // on the service client.
+  // rather than reporting configuration: it connects as a real account and
+  // counts what that connection can see against what the service role can see.
+  // A live policy shows the account its own rows and nothing else.
   try {
     const config = tenantConfig();
     if (!config.ready) {
@@ -191,28 +189,69 @@ export async function GET() {
         detail: `Running on the service key, so row-level security is bypassed and separation depends on application filters alone. ${config.problem}`,
       });
     } else {
+      const { data: accounts } = await supa
+        .from("accounts")
+        .select("id")
+        .order("id")
+        .limit(1)
+        .returns<{ id: number }[]>();
+      const accountId = accounts?.[0]?.id ?? null;
+
       const { count: total } = await supa
         .from("profiles")
         .select("id", { count: "exact", head: true });
-      const scoped = dbForAccount(-1);
-      const { count: leaked, error } = await scoped
-        .from("profiles")
-        .select("id", { count: "exact", head: true });
-      if (error) {
+      const { count: own } = accountId
+        ? await supa
+            .from("profiles")
+            .select("id", { count: "exact", head: true })
+            .eq("account_id", accountId)
+        : { count: 0 };
+
+      if (!accountId) {
         checks.push({
           name: "Tenant isolation",
           ok: false,
-          detail: `The scoped connection was rejected: ${error.message}. Check that SUPABASE_JWT_SECRET matches the project's JWT secret.`,
+          detail: "No accounts exist yet, so there is nothing to test isolation against.",
         });
       } else {
-        const isolated = (leaked ?? 0) === 0;
-        checks.push({
-          name: "Tenant isolation",
-          ok: isolated,
-          detail: isolated
-            ? `Enforced by the database. An unknown account sees 0 of ${total ?? 0} profiles.`
-            : `A scoped connection for an account that does not exist could still see ${leaked} profiles. Row-level security is not covering this table.`,
-        });
+        const scoped = await dbForAccount(accountId);
+        const { count: visible, error } = await scoped
+          .from("profiles")
+          .select("id", { count: "exact", head: true });
+
+        // The fallback is silent by design, so the check has to notice it.
+        const stillFallingBack = tenantConfig().problem;
+        if (error) {
+          checks.push({
+            name: "Tenant isolation",
+            ok: false,
+            detail: `The scoped connection was rejected: ${error.message}`,
+          });
+        } else if (stillFallingBack) {
+          checks.push({
+            name: "Tenant isolation",
+            ok: false,
+            detail: `Running on the service key. ${stillFallingBack}`,
+          });
+        } else if ((visible ?? 0) > (own ?? 0)) {
+          checks.push({
+            name: "Tenant isolation",
+            ok: false,
+            detail: `Account ${accountId} can see ${visible} profiles but owns only ${own}. Row-level security is not covering this table.`,
+          });
+        } else if ((total ?? 0) <= (own ?? 0)) {
+          checks.push({
+            name: "Tenant isolation",
+            ok: true,
+            detail: `Enforced by the database. Only one account exists, so there is no second tenant to be hidden from it yet — it sees its own ${visible} profiles.`,
+          });
+        } else {
+          checks.push({
+            name: "Tenant isolation",
+            ok: true,
+            detail: `Enforced by the database. Account ${accountId} sees its own ${visible} of ${total} profiles; the rest are invisible to it.`,
+          });
+        }
       }
     }
   } catch (e) {

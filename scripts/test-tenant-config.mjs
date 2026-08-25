@@ -1,4 +1,4 @@
-// The isolation environment variables are judged before they are used, because
+// The isolation environment values are judged before they are used, because
 // the alternative was a masked key reaching an HTTP header and taking down
 // login with "Cannot convert argument to a ByteString". Every case here is a
 // paste that has to degrade to the service key with an explanation, not throw.
@@ -20,7 +20,7 @@ function check(name, ok) {
 
 const realAnon =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJhbm9uIn0.8iVpt6IrPn0LFlz3z6LYS_Z0UHa3bcO1EG9YFKKOyG8";
-const realSecret = "a-long-enough-jwt-secret-value-000000";
+const realSecret = "a-long-enough-app-secret-value-000000";
 
 // The paste that broke login: the dashboard's masked display.
 const masked = describeTenantConfig("eyJhbGci••••••••••••", realSecret);
@@ -35,15 +35,17 @@ check("wrapped-with-space refused", describeTenantConfig("eyJhbGci abc.def.ghi",
 
 // Wrong value in the right variable.
 check("not a key at all", describeTenantConfig("your_anon_key_here", realSecret).ready === false);
+// A publishable key is fine now: Supabase issues the token, so nothing here
+// has to match a signing secret.
 const pub = describeTenantConfig("sb_publishable_6LvzXVbY2ETXx_ReinNQmg_08uRPwIx", realSecret);
-check("publishable key refused", pub.ready === false);
-check("publishable key explains which key to use", /legacy anon key/.test(pub.problem ?? ""));
+check("publishable key accepted", pub.ready === true);
 
 // Missing values are a state, not an error.
 check("both unset", describeTenantConfig("", "").ready === false);
 check("both unset explains the consequence", /bypassed|service key/.test(describeTenantConfig("", "").problem ?? ""));
-check("anon set, secret missing", describeTenantConfig(realAnon, "").ready === false);
-check("secret too short", describeTenantConfig(realAnon, "short").ready === false);
+check("anon set, APP_SECRET missing", describeTenantConfig(realAnon, "").ready === false);
+check("APP_SECRET missing names itself", /APP_SECRET/.test(describeTenantConfig(realAnon, "").problem ?? ""));
+check("APP_SECRET too short", describeTenantConfig(realAnon, "short").ready === false);
 
 // The shapes that must work.
 check("real pair is ready", describeTenantConfig(realAnon, realSecret).ready === true);

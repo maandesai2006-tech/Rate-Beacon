@@ -52,11 +52,12 @@ night two weeks out.
    [`supabase/migrations/`](supabase/migrations/) in numeric order, `001` first.
    The last one (`008_tenant_isolation.sql`) is what stops one customer's
    account from reading another's.
-3. From *Project Settings → API* copy four values: the **Project URL**, the
-   **service_role key** (server-only — never expose it in a browser), the
-   **anon key**, and — under *JWT Settings* — the **JWT Secret**. The last two
-   are what let the app connect as the signed-in account, so the database
-   enforces the separation instead of the application code remembering to.
+3. From *Project Settings → API* copy three values: the **Project URL**, the
+   **service_role key** (server-only — never expose it in a browser), and the
+   **anon key**. The anon key is what lets the app connect as the signed-in
+   account, so the database enforces the separation instead of the application
+   code remembering to. Reveal each value before copying — the masked display
+   is bullet characters, not the key.
 
 > Already done for this repo's owner: the project **rate-beacon**
 > (`https://fcyghazlfnytejvdxkfk.supabase.co`, us-east-1) exists with the
@@ -68,14 +69,15 @@ night two weeks out.
    subfolder of a larger repo, set **Root Directory** to `rate-beacon`.
 2. Add the environment variables from [`.env.example`](.env.example):
    `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`,
-   `SUPABASE_JWT_SECRET`, and `CRON_SECRET` (any long random string —
-   protects the daily job).
+   `APP_SECRET` (any long random string — it encrypts stored credentials and
+   derives each account's database identity), and `CRON_SECRET` (another long
+   random string — protects the daily job).
 3. Deploy. `vercel.json` registers a **daily cron at 06:00 UTC** that snapshots
    all rates; Vercel authenticates it automatically with `CRON_SECRET`.
 4. Open **/api/system-check** and confirm *Tenant isolation* reads
-   "Enforced by the database". Without the anon key and JWT secret the app
-   still runs, but on the service key with row-level security bypassed —
-   acceptable for a single owner, not for a second customer.
+   "Enforced by the database". Without the anon key the app still runs, but on
+   the service key with row-level security bypassed — acceptable for a single
+   owner, not for a second customer.
 
 Open the site → **Create a profile** (paste the hotel's TripAdvisor link,
 add competitors) → hit **Refresh rates** once. From then on the daily job

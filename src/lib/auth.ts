@@ -182,5 +182,5 @@ export async function requireAccount(
       response: Response.json({ error: "Sign in required" }, { status: 401 }),
     };
   }
-  return { ok: true, accountId, supa: dbForAccount(accountId) };
+  return { ok: true, accountId, supa: await dbForAccount(accountId) };
 }
