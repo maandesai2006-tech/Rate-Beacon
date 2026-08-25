@@ -52,16 +52,23 @@ export async function GET(req: NextRequest) {
   });
   // Your own hotels are not competitors.
   const suggestions = all.filter((c) => !c.alreadyTracked).slice(0, count);
+  const fromListing = suggestions.filter((s) => s.source === "listing").length;
 
   return NextResponse.json({
     radiusMiles,
     directorySize: dir.total,
     listingShape: dir.shape,
     listingError: dir.error,
+    fromListing,
+    fromKnown: suggestions.length - fromListing,
     suggestions,
     note:
-      suggestions.length === 0 && dir.error
-        ? `The hotel listing could not be read, so there is nothing to suggest. ${dir.error}`
-        : null,
+      suggestions.length > 0 && dir.error
+        ? `The market listing could not be read (${dir.error}), so these are the hotels already known near you. Paste a TripAdvisor link to add anything missing.`
+        : suggestions.length === 0 && dir.error
+          ? `Nothing to suggest yet: the market listing could not be read, and no hotels are known within ${radiusMiles} miles. ${dir.error} Paste a TripAdvisor link to add competitors directly.`
+          : suggestions.length === 0
+            ? `No hotels found within ${radiusMiles} miles. Try a wider radius.`
+            : null,
   });
 }

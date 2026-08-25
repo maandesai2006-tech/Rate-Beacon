@@ -68,25 +68,22 @@ export async function GET(req: NextRequest) {
   // Fill the directory for this market if it is stale, then place anything
   // that came back without coordinates so the radius filter can see it.
   const dir = await refreshDirectory(supa, anchor.locationKey);
-  if (dir.error && dir.total === 0) {
-    return NextResponse.json(
-      {
-        radiusMiles,
-        results: [],
-        error: `No hotel directory for this market yet. ${dir.error}`,
-        hint: "Paste a TripAdvisor link for the hotel to add it directly.",
-      },
-      { status: 200 }
-    );
-  }
   await placeDirectory(supa, anchor.locationKey, anchor.cityName, query ? 4 : 10);
 
+  // Search runs whether or not the listing answered: hotels already known to
+  // the deployment are a second source, so a failed upstream call narrows the
+  // results rather than emptying them.
   const results = await searchNearby(supa, profile.id, anchor, { query, radiusMiles });
 
   return NextResponse.json({
     radiusMiles,
     anchor: { latitude: anchor.latitude, longitude: anchor.longitude },
     directorySize: dir.total,
+    listingError: dir.error,
     results,
+    note:
+      results.length === 0 && dir.error
+        ? `Nothing found within ${radiusMiles} miles, and the market listing could not be read: ${dir.error} Paste the hotel's TripAdvisor link to add it directly.`
+        : null,
   });
 }

@@ -83,7 +83,9 @@ export default function CompsetPicker({
         );
         const j = await res.json();
         setResults(j.results ?? []);
-        setSearchNote(j.error ? `${j.error} ${j.hint ?? ""}`.trim() : null);
+        setSearchNote(
+          j.error ? `${j.error} ${j.hint ?? ""}`.trim() : (j.note ?? null)
+        );
       } catch (e) {
         setSearchNote((e as Error).message);
       } finally {

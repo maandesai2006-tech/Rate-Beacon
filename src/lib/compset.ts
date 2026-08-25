@@ -27,6 +27,17 @@ export interface Candidate {
   latitude: number | null;
   longitude: number | null;
   alreadyTracked: boolean;
+  /** Where the candidate was found — shown so an empty result is explainable. */
+  source: "listing" | "known";
+}
+
+interface DirectoryRow {
+  hotel_id: string;
+  name: string;
+  latitude: number | null;
+  longitude: number | null;
+  rating: number | null;
+  review_count: number | null;
 }
 
 export interface Anchor {
@@ -237,6 +248,41 @@ export async function placeDirectory(
   return placed;
 }
 
+/**
+ * Hotels already known to the deployment, near a point.
+ *
+ * The market listing is the primary source, but it is one undocumented
+ * upstream endpoint away from returning nothing, and a compset picker that
+ * empties out when a third party changes a parameter name is not something to
+ * sell. Every hotel any customer has ever tracked is already stored with a
+ * TripAdvisor key and coordinates, so it is priceable by construction and
+ * costs no external call. It is read here as a second source, unioned with the
+ * listing rather than replacing it.
+ *
+ * The box is a degree approximation around the anchor; exact distance is
+ * applied afterwards, so the box only has to be generous.
+ */
+async function knownHotelsNear(
+  supa: SupabaseClient,
+  anchor: Anchor,
+  radiusMiles: number
+): Promise<DirectoryRow[]> {
+  const dLat = radiusMiles / 69;
+  const dLon = radiusMiles / Math.max(1, 69 * Math.cos((anchor.latitude * Math.PI) / 180));
+
+  const { data } = await supa
+    .from("hotels")
+    .select("hotel_id, name, latitude, longitude, rating, review_count")
+    .gte("latitude", anchor.latitude - dLat)
+    .lte("latitude", anchor.latitude + dLat)
+    .gte("longitude", anchor.longitude - dLon)
+    .lte("longitude", anchor.longitude + dLon)
+    .limit(500)
+    .returns<DirectoryRow[]>();
+
+  return data ?? [];
+}
+
 function normalise(s: string): string {
   return s
     .toLowerCase()
@@ -263,22 +309,14 @@ export async function searchNearby(
     limit = 25,
   }: { query?: string; radiusMiles?: number; limit?: number } = {}
 ): Promise<Candidate[]> {
-  const [{ data: rows }, { data: tracked }] = await Promise.all([
+  const [{ data: listed }, known, { data: tracked }] = await Promise.all([
     supa
       .from("hotel_directory")
       .select("hotel_id, name, latitude, longitude, rating, review_count")
       .eq("location_key", anchor.locationKey)
       .limit(500)
-      .returns<
-        {
-          hotel_id: string;
-          name: string;
-          latitude: number | null;
-          longitude: number | null;
-          rating: number | null;
-          review_count: number | null;
-        }[]
-      >(),
+      .returns<DirectoryRow[]>(),
+    knownHotelsNear(supa, anchor, radiusMiles),
     supa
       .from("profile_hotels")
       .select("hotel_id")
@@ -286,12 +324,28 @@ export async function searchNearby(
       .returns<{ hotel_id: string }[]>(),
   ]);
 
+  // Union, listing first so its ratings win, and a row with coordinates beats
+  // one without whichever source it came from.
+  const merged = new Map<string, { row: DirectoryRow; source: "listing" | "known" }>();
+  for (const row of listed ?? []) merged.set(row.hotel_id, { row, source: "listing" });
+  for (const row of known) {
+    const existing = merged.get(row.hotel_id);
+    if (!existing) {
+      merged.set(row.hotel_id, { row, source: "known" });
+    } else if (existing.row.latitude == null && row.latitude != null) {
+      merged.set(row.hotel_id, {
+        row: { ...existing.row, latitude: row.latitude, longitude: row.longitude },
+        source: existing.source,
+      });
+    }
+  }
+
   const trackedSet = new Set((tracked ?? []).map((t) => t.hotel_id));
   const q = normalise(query);
   const terms = q ? q.split(" ").filter(Boolean) : [];
 
   const out: Candidate[] = [];
-  for (const r of rows ?? []) {
+  for (const { row: r, source } of merged.values()) {
     const distance =
       r.latitude != null && r.longitude != null
         ? milesBetween(anchor, { latitude: r.latitude, longitude: r.longitude })
@@ -316,6 +370,7 @@ export async function searchNearby(
       latitude: r.latitude,
       longitude: r.longitude,
       alreadyTracked: trackedSet.has(r.hotel_id),
+      source,
     });
   }
 
