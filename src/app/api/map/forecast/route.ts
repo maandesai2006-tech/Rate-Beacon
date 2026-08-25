@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { geocodeHotel } from "@/lib/geo";
 
 export const runtime = "nodejs";
@@ -23,9 +22,9 @@ interface OpenMeteoLocation {
 }
 
 export async function GET(req: NextRequest) {
-  const supa = db();
-  const accountId = await accountForSession(supa, req.cookies.get(SESSION_COOKIE)?.value);
-  if (!accountId) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
 
   const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
   const range = (req.nextUrl.searchParams.get("range") ?? "12h") as Range;

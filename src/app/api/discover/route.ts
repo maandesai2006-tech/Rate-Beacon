@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { discoverForBaseline } from "@/lib/discovery";
 import type { Profile } from "@/lib/types";
 
@@ -9,15 +9,31 @@ export const maxDuration = 300;
 // Rebuilds competitor sets from data: location listing → geocode → nearest by
 // distance. Runs for one baseline, or every baseline in the profile.
 export async function POST(req: NextRequest) {
-  const supa = db();
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
   const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
   const baselineId = req.nextUrl.searchParams.get("baselineId");
   const compCount = Number(req.nextUrl.searchParams.get("comps")) || 15;
   const extras = Number(req.nextUrl.searchParams.get("extras")) || 3;
 
   try {
-    let q = supa.from("profiles").select("*").order("id").limit(1);
-    if (profileId) q = supa.from("profiles").select("*").eq("id", profileId).limit(1);
+    // Bounded by the account either way: without it, passing any profile id
+    // rebuilt someone else's competitive set.
+    let q = supa
+      .from("profiles")
+      .select("*")
+      .eq("account_id", accountId)
+      .order("id")
+      .limit(1);
+    if (profileId) {
+      q = supa
+        .from("profiles")
+        .select("*")
+        .eq("account_id", accountId)
+        .eq("id", profileId)
+        .limit(1);
+    }
     const { data: profile } = await q.maybeSingle<Profile>();
     if (!profile) {
       return NextResponse.json({ error: "No profile found" }, { status: 404 });

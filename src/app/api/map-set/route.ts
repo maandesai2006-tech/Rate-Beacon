@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { hotelsNear, namesMatch } from "@/lib/overpass";
 import { haversineKm } from "@/lib/discovery";
 
@@ -10,8 +10,23 @@ import { haversineKm } from "@/lib/discovery";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  const supa = db();
+  // This was reachable without credentials and looped over every profile's
+  // baselines, so any visitor could trigger work across all tenants. It is now
+  // a signed-in action bounded to the caller's own profiles.
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
   const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
+
+  const { data: ownProfiles } = await supa
+    .from("profiles")
+    .select("id")
+    .eq("account_id", accountId)
+    .returns<{ id: number }[]>();
+  const ownIds = new Set((ownProfiles ?? []).map((p) => p.id));
+  if (profileId && !ownIds.has(profileId)) {
+    return NextResponse.json({ error: "Unknown profile" }, { status: 400 });
+  }
   const want = Math.min(Number(req.nextUrl.searchParams.get("limit")) || 30, 60);
 
   try {
@@ -28,7 +43,10 @@ export async function POST(req: NextRequest) {
       >();
 
     const targets = (baselines ?? []).filter(
-      (b) => (!profileId || b.profile_id === profileId) && b.hotels?.latitude != null
+      (b) =>
+        ownIds.has(b.profile_id) &&
+        (!profileId || b.profile_id === profileId) &&
+        b.hotels?.latitude != null
     );
     if (targets.length === 0) {
       return NextResponse.json(

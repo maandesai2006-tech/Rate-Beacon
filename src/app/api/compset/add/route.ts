@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { anchorForProfile } from "@/lib/compset";
 import { milesBetween } from "@/lib/xotelo-list";
 
@@ -21,9 +20,9 @@ interface Body {
 }
 
 export async function POST(req: NextRequest) {
-  const supa = db();
-  const accountId = await accountForSession(supa, req.cookies.get(SESSION_COOKIE)?.value);
-  if (!accountId) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
 
   const body = (await req.json().catch(() => ({}))) as Body;
   const profileId = Number(body.profileId) || null;

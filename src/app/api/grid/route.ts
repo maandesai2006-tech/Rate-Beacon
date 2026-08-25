@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { addDaysISO, dateRange, todayISO, weekdayOf } from "@/lib/dates";
 import { adviceFor, demandScore, median, positionOf } from "@/lib/insights";
 import { getHolidays, getWeather } from "@/lib/signals";
@@ -32,22 +32,23 @@ interface SnapshotRow {
 
 export async function GET(req: NextRequest) {
   try {
-    const accountId = await accountForSession(db(), req.cookies.get(SESSION_COOKIE)?.value);
-    if (!accountId) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+    const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+    if (!auth.ok) return auth.response;
+    const { accountId, supa } = auth;
     const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
     const baselineId = req.nextUrl.searchParams.get("baselineId");
-    return await buildGrid(profileId, baselineId, accountId);
+    return await buildGrid(supa, profileId, baselineId, accountId);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }
 
 async function buildGrid(
+  supa: SupabaseClient,
   profileId: number | null,
   baselineIdParam: string | null,
   accountId: number
 ) {
-  const supa = db();
   const today = todayISO();
 
   let profileQuery = supa

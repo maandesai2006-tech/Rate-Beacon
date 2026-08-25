@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESSION_COOKIE } from "@/lib/auth";
+import { SESSION_COOKIE } from "@/lib/session";
 
 // The dashboard is gated; the shop window is not.
 //
@@ -16,7 +16,8 @@ const PUBLIC_API_PREFIXES = [
   "/api/auth",
   "/api/cron",
   "/api/demo",
-  "/api/map-set",
+  // /api/map-set used to be here. It loops over profile baselines, so leaving
+  // it open let any visitor trigger work across every tenant.
 ];
 
 export function middleware(req: NextRequest) {

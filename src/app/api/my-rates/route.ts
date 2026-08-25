@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
   const { profileId, checkIn, price } = (await req.json()) as {
@@ -13,7 +13,20 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  const supa = db();
+  // This endpoint used to take a profileId and no credentials at all, so
+  // anyone who guessed an id could overwrite another hotel's rate overrides.
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
+
+  const { data: owned } = await supa
+    .from("profiles")
+    .select("id")
+    .eq("account_id", accountId)
+    .eq("id", profileId)
+    .maybeSingle<{ id: number }>();
+  if (!owned) return NextResponse.json({ error: "Unknown profile" }, { status: 400 });
+
   if (price == null) {
     const { error } = await supa
       .from("my_rates")

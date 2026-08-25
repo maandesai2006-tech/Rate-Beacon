@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, dbForAccount, tenantIsolationReady } from "@/lib/db";
 import { hotelsNear, lastOverpassErrors } from "@/lib/overpass";
 
 // A one-click health report, in plain language. Every external dependency is
@@ -170,6 +170,53 @@ export async function GET() {
     });
   } catch (e) {
     checks.push({ name: "Coverage", ok: false, detail: (e as Error).message });
+  }
+
+  // 8. Tenant isolation
+  //
+  // Two accounts share one database, so the question that matters to a buyer
+  // is whether the database itself refuses to hand one account another's rows
+  // — not whether the application code remembers to filter. This probes it
+  // rather than reporting configuration: it asks, as a scoped client for an
+  // account id that cannot exist, for rows the service client can see. A live
+  // policy answers with nothing. A rejected token answers with an error, which
+  // is also worth knowing, because the routes would then be silently running
+  // on the service client.
+  try {
+    if (!tenantIsolationReady()) {
+      checks.push({
+        name: "Tenant isolation",
+        ok: false,
+        detail:
+          "Running on the service key: row-level security is not engaged, so separation depends on application filters alone. Set SUPABASE_JWT_SECRET (Supabase → Settings → API → JWT Secret) and SUPABASE_ANON_KEY, then redeploy.",
+      });
+    } else {
+      const { count: total } = await supa
+        .from("profiles")
+        .select("id", { count: "exact", head: true });
+      const scoped = dbForAccount(-1);
+      const { count: leaked, error } = await scoped
+        .from("profiles")
+        .select("id", { count: "exact", head: true });
+      if (error) {
+        checks.push({
+          name: "Tenant isolation",
+          ok: false,
+          detail: `The scoped connection was rejected: ${error.message}. Check that SUPABASE_JWT_SECRET matches the project's JWT secret.`,
+        });
+      } else {
+        const isolated = (leaked ?? 0) === 0;
+        checks.push({
+          name: "Tenant isolation",
+          ok: isolated,
+          detail: isolated
+            ? `Enforced by the database. An unknown account sees 0 of ${total ?? 0} profiles.`
+            : `A scoped connection for an account that does not exist could still see ${leaked} profiles. Row-level security is not covering this table.`,
+        });
+      }
+    }
+  } catch (e) {
+    checks.push({ name: "Tenant isolation", ok: false, detail: (e as Error).message });
   }
 
   return NextResponse.json({ checkedAt: new Date().toISOString(), checks });

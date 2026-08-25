@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { SESSION_COOKIE } from "@/lib/auth";
+import { SESSION_COOKIE } from "@/lib/session";
 import SiteNav from "@/components/SiteNav";
 
 export const dynamic = "force-dynamic";

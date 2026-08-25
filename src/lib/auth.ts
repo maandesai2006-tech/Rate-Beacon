@@ -4,8 +4,9 @@
 // random tokens stored server-side and referenced by an httpOnly cookie.
 
 import { SupabaseClient } from "@supabase/supabase-js";
+import { SESSION_COOKIE } from "./session";
 
-export const SESSION_COOKIE = "rb_session";
+export { SESSION_COOKIE };
 const ITERATIONS = 210_000;
 const SESSION_DAYS = 30;
 
@@ -155,3 +156,31 @@ export async function accountForSession(
 }
 
 export const SESSION_MAX_AGE = SESSION_DAYS * 86400;
+
+/**
+ * The one way a request handler should get at the database.
+ *
+ * Resolving the session needs the service client — the account is not known
+ * yet, and the sessions table is deliberately not readable by a scoped token.
+ * Everything after that uses a client bound to the account, so row-level
+ * security can refuse another tenant's rows even if a query forgets to filter.
+ *
+ * Returning the client rather than just the id is what makes the safe path the
+ * short one: there is no reason for a handler to reach for db() at all.
+ */
+export async function requireAccount(
+  token: string | undefined
+): Promise<
+  | { ok: true; accountId: number; supa: SupabaseClient }
+  | { ok: false; response: Response }
+> {
+  const { db, dbForAccount } = await import("./db");
+  const accountId = await accountForSession(db(), token);
+  if (!accountId) {
+    return {
+      ok: false,
+      response: Response.json({ error: "Sign in required" }, { status: 401 }),
+    };
+  }
+  return { ok: true, accountId, supa: dbForAccount(accountId) };
+}

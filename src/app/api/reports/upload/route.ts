@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { accountForSession, SESSION_COOKIE } from "@/lib/auth";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { ingestReport } from "@/lib/report-ingest";
 import { pdfToText } from "@/lib/pdf";
 import { geminiConfigured } from "@/lib/gemini";
@@ -10,9 +9,9 @@ export const maxDuration = 60;
 // Manual upload: CSV, TSV, text, or an email saved as text. Spreadsheets
 // should be exported to CSV first; a PDF can be pasted as text.
 export async function POST(req: NextRequest) {
-  const supa = db();
-  const accountId = await accountForSession(supa, req.cookies.get(SESSION_COOKIE)?.value);
-  if (!accountId) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
 
   const form = await req.formData().catch(() => null);
   let text = "";
