@@ -13,6 +13,7 @@ import type { Baseline, GridResponse, GridRow, HistoryPoint, Hotel, MapPlace, Ra
 import Sparkline from "@/components/Sparkline";
 import ReportsPanel from "@/components/ReportsPanel";
 import HotelForecast from "@/components/HotelForecast";
+import CompsetPicker from "@/components/CompsetPicker";
 import dynamicImport from "next/dynamic";
 
 // Leaflet touches window on import, so the map is client-only.
@@ -95,6 +96,7 @@ export default function Dashboard() {
   }, []);
   const [refreshing, setRefreshing] = useState(false);
   const [discovering, setDiscovering] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [mapping, setMapping] = useState(false);
   const [checks, setChecks] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -499,12 +501,16 @@ export default function Dashboard() {
             {mapping ? "Mapping…" : "Refresh map"}
           </button>
           <button
-            onClick={discover}
-            disabled={discovering || refreshing}
+            onClick={() => setPickerOpen((o) => !o)}
             className="btn-ghost px-3 py-1.5 text-[13px]"
-            title="Rebuild this hotel's competitor set from TripAdvisor listings and distance"
+            style={
+              pickerOpen
+                ? { borderColor: "var(--accent)", background: "var(--accent-soft)", color: "var(--accent)" }
+                : undefined
+            }
+            title="Search nearby hotels, or take a suggested competitive set"
           >
-            {discovering ? "Searching…" : "Find competitors"}
+            Competitors
           </button>
           <button
             onClick={refresh}
@@ -587,6 +593,15 @@ export default function Dashboard() {
           </p>
         </div>
       </div>
+
+      {pickerOpen && (
+        <CompsetPicker
+          profileId={profileId}
+          baselineHotelId={baselineId}
+          baselineName={baselines.find((b) => b.hotel_id === baselineId)?.name ?? null}
+          onChanged={load}
+        />
+      )}
 
       {/* View tabs */}
       <TabBar tab={tab} onChange={setTab} />
