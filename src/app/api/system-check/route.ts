@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db, dbForAccount, tenantIsolationReady } from "@/lib/db";
+import { db, dbForAccount, tenantConfig } from "@/lib/db";
 import { hotelsNear, lastOverpassErrors } from "@/lib/overpass";
 
 // A one-click health report, in plain language. Every external dependency is
@@ -183,12 +183,12 @@ export async function GET() {
   // is also worth knowing, because the routes would then be silently running
   // on the service client.
   try {
-    if (!tenantIsolationReady()) {
+    const config = tenantConfig();
+    if (!config.ready) {
       checks.push({
         name: "Tenant isolation",
         ok: false,
-        detail:
-          "Running on the service key: row-level security is not engaged, so separation depends on application filters alone. Set SUPABASE_JWT_SECRET (Supabase → Settings → API → JWT Secret) and SUPABASE_ANON_KEY, then redeploy.",
+        detail: `Running on the service key, so row-level security is bypassed and separation depends on application filters alone. ${config.problem}`,
       });
     } else {
       const { count: total } = await supa

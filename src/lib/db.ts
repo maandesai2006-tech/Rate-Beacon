@@ -47,6 +47,13 @@ export function db(): SupabaseClient {
   if (!key) {
     throw new Error("SUPABASE_SERVICE_ROLE_KEY is not set. See .env.example.");
   }
+  // Same trap as the anon key: a value copied from the dashboard's masked
+  // display cannot go in a header, and the raw failure is unreadable.
+  if ([...key].some((ch) => ch.charCodeAt(0) > 255)) {
+    throw new Error(
+      "SUPABASE_SERVICE_ROLE_KEY contains characters that cannot go in a request header (usually • from the dashboard's hidden display). Reveal the key in Project Settings → API and copy the whole value."
+    );
+  }
   try {
     serviceClient = createClient(url, key, { auth: { persistSession: false } });
   } catch (e) {
@@ -57,12 +64,95 @@ export function db(): SupabaseClient {
   return serviceClient;
 }
 
+export interface TenantConfig {
+  ready: boolean;
+  /** Plain-English reason it is not ready, or null when it is. */
+  problem: string | null;
+}
+
+/**
+ * Judge the two isolation values before they are ever used.
+ *
+ * A key copied out of the Supabase dashboard's masked display carries bullet
+ * characters, which are not valid in an HTTP header — and the failure surfaced
+ * as "Cannot convert argument to a ByteString" on the login request, which
+ * tells nobody anything. Anything that cannot go in a header is rejected here
+ * instead, the deployment falls back to the service key, and the reason is
+ * reported by the system check. A pasted-wrong environment variable should
+ * cost isolation, never the ability to sign in.
+ *
+ * Exported and pure so it can be tested without a database.
+ */
+export function describeTenantConfig(rawAnon: string, rawSecret: string): TenantConfig {
+  const anon = cleanValue(rawAnon);
+  const secret = cleanValue(rawSecret);
+
+  if (!anon && !secret) {
+    return {
+      ready: false,
+      problem:
+        "SUPABASE_ANON_KEY and SUPABASE_JWT_SECRET are not set, so the app connects with the service key and row-level security is bypassed.",
+    };
+  }
+  if (!anon) return { ready: false, problem: "SUPABASE_ANON_KEY is not set." };
+  if (!secret) return { ready: false, problem: "SUPABASE_JWT_SECRET is not set." };
+
+  // Header values must be single-byte. Bullets, curly quotes and non-breaking
+  // spaces all come from copying a rendered page rather than the value.
+  const bad = [...anon].find((ch) => ch.charCodeAt(0) > 255 || ch.charCodeAt(0) < 0x20);
+  if (bad) {
+    const label = bad === "\u2022" ? "a bullet (•)" : `"${bad}" (U+${bad.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")})`;
+    return {
+      ready: false,
+      problem: `SUPABASE_ANON_KEY contains ${label}, so it is the dashboard's masked display rather than the key itself. Reveal it in Supabase → Project Settings → API and copy the whole value.`,
+    };
+  }
+  if (/\s/.test(anon)) {
+    return { ready: false, problem: "SUPABASE_ANON_KEY contains a space or line break — it was copied with wrapping." };
+  }
+
+  const looksLikeJwt = anon.split(".").length === 3 && anon.startsWith("ey");
+  const looksLikePublishable = /^sb_publishable_/.test(anon);
+  if (!looksLikeJwt && !looksLikePublishable) {
+    return {
+      ready: false,
+      problem:
+        "SUPABASE_ANON_KEY does not look like a Supabase key — it should be a three-part JWT starting with \"ey\", or start with \"sb_publishable_\".",
+    };
+  }
+  if (looksLikePublishable) {
+    // The scoped client authenticates with a token this app signs using the
+    // project's legacy JWT secret; a publishable key belongs to the newer
+    // system and will not verify against it.
+    return {
+      ready: false,
+      problem:
+        "SUPABASE_ANON_KEY is a publishable key (sb_publishable_…). Use the legacy anon key from Project Settings → API → Project API keys, which is what the JWT secret signs against.",
+    };
+  }
+
+  if (secret.length < 24 || [...secret].some((ch) => ch.charCodeAt(0) > 255)) {
+    return {
+      ready: false,
+      problem:
+        "SUPABASE_JWT_SECRET does not look like the project's JWT secret — reveal it in Project Settings → API → JWT Settings and copy the whole value.",
+    };
+  }
+
+  return { ready: true, problem: null };
+}
+
+/** The isolation configuration of this deployment, judged from the environment. */
+export function tenantConfig(): TenantConfig {
+  return describeTenantConfig(
+    process.env.SUPABASE_ANON_KEY ?? "",
+    process.env.SUPABASE_JWT_SECRET ?? ""
+  );
+}
+
 /** Whether database-enforced isolation is configured on this deployment. */
 export function tenantIsolationReady(): boolean {
-  return Boolean(
-    cleanValue(process.env.SUPABASE_JWT_SECRET ?? "") &&
-      cleanValue(process.env.SUPABASE_ANON_KEY ?? "")
-  );
+  return tenantConfig().ready;
 }
 
 function base64url(input: Buffer | string): string {
