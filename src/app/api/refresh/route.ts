@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
-import { hydrationState, queueHydration } from "@/lib/hydration";
+import { hydrationState, queueHydration, registerSchedulerTarget } from "@/lib/hydration";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +16,10 @@ export async function POST(req: NextRequest) {
   if (!auth.ok) return auth.response;
 
   try {
+    // Also the moment to tell the in-database scheduler where to call: it
+    // cannot know the deployment's URL, and waiting for the nightly cron to
+    // write it would leave the first day of a new deployment uncollected.
+    await registerSchedulerTarget();
     const state = await queueHydration();
     return NextResponse.json({
       ...state,

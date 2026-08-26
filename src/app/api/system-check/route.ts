@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db, dbForAccount, tenantConfig } from "@/lib/db";
+import { hydrationState, registerSchedulerTarget } from "@/lib/hydration";
 import { hotelsNear, lastOverpassErrors } from "@/lib/overpass";
 
 // A one-click health report, in plain language. Every external dependency is
@@ -256,6 +257,35 @@ export async function GET() {
     }
   } catch (e) {
     checks.push({ name: "Tenant isolation", ok: false, detail: (e as Error).message });
+  }
+
+  // 9. Rate collection
+  //
+  // The one check that answers "why is the grid empty?" — a day's collection
+  // is thousands of upstream calls and runs in the background, so what matters
+  // is whether it is progressing, not whether any single request worked.
+  try {
+    const target = await registerSchedulerTarget();
+    const state = await hydrationState();
+    const stale =
+      state.status === "collecting" &&
+      state.lastTickAt != null &&
+      Date.now() - new Date(state.lastTickAt).getTime() > 20 * 60_000;
+
+    checks.push({
+      name: "Rate collection",
+      ok: state.status === "complete" || (state.status === "collecting" && !stale),
+      detail:
+        state.status === "complete"
+          ? `Today's collection finished: ${state.rowsWritten} prices across ${state.total} hotel-nights.`
+          : state.status === "collecting"
+            ? stale
+              ? `Stalled at ${state.percent}% — the last slice ran ${new Date(state.lastTickAt as string).toLocaleTimeString()}. The scheduler calls ${target ?? "the deployment"} every five minutes; check CRON_SECRET matches on both sides.`
+              : `In progress: ${state.percent}% of ${state.total} hotel-nights, ${state.rowsWritten} prices stored.`
+            : `Not started today. The scheduler calls ${target ?? "the deployment"} every five minutes; it starts on the first tick.`,
+    });
+  } catch (e) {
+    checks.push({ name: "Rate collection", ok: false, detail: (e as Error).message });
   }
 
   return NextResponse.json({ checkedAt: new Date().toISOString(), checks });
