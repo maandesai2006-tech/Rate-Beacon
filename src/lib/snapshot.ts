@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { db } from "./db";
 import { getRates } from "./xotelo";
 import { addDaysISO, dateRange, todayISO } from "./dates";
@@ -16,7 +17,13 @@ export interface SnapshotResult {
   nextOffset: number | null;
 }
 
-interface TrackedHotel {
+/** One hotel-night to price. */
+export interface RateJob {
+  checkIn: string;
+  hotel: TrackedHotel;
+}
+
+export interface TrackedHotel {
   hotel_id: string;
   name: string;
   currency: string;
@@ -26,14 +33,25 @@ interface TrackedHotel {
 
 // Fetch nightly quotes for every hotel tracked by any profile and store
 // today's snapshot. A hotel shared by several profiles is fetched once, using
-// the widest horizon among them. One Xotelo request per hotel per night, so a
-// small worker pool; `maxDates` keeps a run inside serverless time limits.
-export async function runSnapshot(
-  maxDates?: number,
-  chunk?: { offset: number; limit: number }
-): Promise<SnapshotResult> {
-  const supa = db();
+// the widest horizon among them. One Xotelo request per hotel per night.
+//
+// The work is split in two so a background run can be resumed: buildJobs()
+// decides what today's collection consists of, and processJobs() prices a
+// bounded slice of it. Both are deterministic given the same tracked set, so a
+// cursor into the job list survives across invocations.
 
+export interface JobPlan {
+  jobs: RateJob[];
+  profiles: Profile[];
+  hotels: number;
+  dates: number;
+  note: string | null;
+}
+
+export async function buildJobs(
+  supa: SupabaseClient,
+  maxDates?: number
+): Promise<JobPlan> {
   const [{ data: profiles }, { data: links }, { data: hotelRows }] =
     await Promise.all([
       supa.from("profiles").select("*").returns<Profile[]>(),
@@ -46,11 +64,9 @@ export async function runSnapshot(
         .select("hotel_id, name")
         .returns<{ hotel_id: string; name: string }[]>(),
     ]);
+
   if (!profiles?.length || !links?.length) {
-    return {
-      profiles: 0, hotels: 0, dates: 0, rowsWritten: 0,
-      errors: ["No profiles configured yet"], total: 0, nextOffset: null,
-    };
+    return { jobs: [], profiles: profiles ?? [], hotels: 0, dates: 0, note: "No profiles configured yet" };
   }
 
   const nameById = new Map(hotelRows?.map((h) => [h.hotel_id, h.name]) ?? []);
@@ -81,27 +97,46 @@ export async function runSnapshot(
     maxDates ?? 120
   );
   const dates = dateRange(todayISO(), maxHorizon);
-  const errors: string[] = [];
-  let rowsWritten = 0;
 
-  const allJobs = dates.flatMap((checkIn, dayIdx) =>
+  // Date-major, so the nights a dashboard actually shows are priced first and
+  // a run that is still in progress is still useful.
+  const jobs = dates.flatMap((checkIn, dayIdx) =>
     [...tracked.values()]
       .filter((h) => dayIdx < h.horizon)
       .map((hotel) => ({ checkIn, hotel }))
   );
-  // Serverless functions are wall-clock limited (60s on Vercel's Hobby
-  // plan), so a run is sliced into chunks the caller loops over.
-  const offset = chunk?.offset ?? 0;
-  const limit = chunk?.limit ?? allJobs.length;
-  const jobs = allJobs.slice(offset, offset + limit);
-  const isLastChunk = offset + limit >= allJobs.length;
 
-  const CONCURRENCY = 4;
+  return { jobs, profiles, hotels: tracked.size, dates: dates.length, note: null };
+}
+
+export interface ProcessResult {
+  rowsWritten: number;
+  errors: string[];
+  /** How many of the given jobs were finished before the budget ran out. */
+  done: number;
+}
+
+/**
+ * Price a slice of jobs, stopping when the time budget is spent.
+ *
+ * The budget is what makes a run resumable: the caller records how many jobs
+ * were finished and starts there next time, instead of restarting the day.
+ */
+export async function processJobs(
+  supa: SupabaseClient,
+  jobs: RateJob[],
+  { budgetMs = 45_000, concurrency = 4 }: { budgetMs?: number; concurrency?: number } = {}
+): Promise<ProcessResult> {
+  const deadline = Date.now() + budgetMs;
+  const errors: string[] = [];
+  let rowsWritten = 0;
   let cursor = 0;
+  let finished = 0;
   let aborted = false;
 
   async function worker() {
     while (!aborted) {
+      if (Date.now() > deadline) return;
       const i = cursor++;
       if (i >= jobs.length) return;
       const { checkIn, hotel } = jobs[i];
@@ -136,24 +171,55 @@ export async function runSnapshot(
         // Persistent failure (network, upstream outage) — stop hammering.
         if (errors.length >= 10) aborted = true;
       }
+      finished++;
     }
   }
 
-  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return { rowsWritten, errors, done: finished };
+}
 
-  // Enrichment is only worth running once the rates are in.
-  if (isLastChunk) {
-    errors.push(...(await refreshEvents(supa, profiles)));
-    errors.push(...(await refreshRatings(supa, profiles)));
+/** Enrichment worth running once, after the day's rates are in. */
+export async function runEnrichment(supa: SupabaseClient, profiles: Profile[]): Promise<string[]> {
+  const errors: string[] = [];
+  errors.push(...(await refreshEvents(supa, profiles)));
+  errors.push(...(await refreshRatings(supa, profiles)));
+  return errors;
+}
+
+/**
+ * The original offset/limit interface, kept for callers that drive their own
+ * chunking. New work should use the resumable run in lib/hydration.ts.
+ */
+export async function runSnapshot(
+  maxDates?: number,
+  chunk?: { offset: number; limit: number }
+): Promise<SnapshotResult> {
+  const supa = db();
+  const plan = await buildJobs(supa, maxDates);
+  if (plan.note) {
+    return {
+      profiles: 0, hotels: 0, dates: 0, rowsWritten: 0,
+      errors: [plan.note], total: 0, nextOffset: null,
+    };
   }
 
+  const offset = chunk?.offset ?? 0;
+  const limit = chunk?.limit ?? plan.jobs.length;
+  const slice = plan.jobs.slice(offset, offset + limit);
+  const isLastChunk = offset + limit >= plan.jobs.length;
+
+  const r = await processJobs(supa, slice, { budgetMs: 45_000 });
+  const errors = [...r.errors];
+  if (isLastChunk) errors.push(...(await runEnrichment(supa, plan.profiles)));
+
   return {
-    profiles: profiles.length,
-    hotels: tracked.size,
-    dates: dates.length,
-    rowsWritten,
+    profiles: plan.profiles.length,
+    hotels: plan.hotels,
+    dates: plan.dates,
+    rowsWritten: r.rowsWritten,
     errors: errors.slice(0, 10),
-    total: allJobs.length,
+    total: plan.jobs.length,
     nextOffset: isLastChunk ? null : offset + limit,
   };
 }

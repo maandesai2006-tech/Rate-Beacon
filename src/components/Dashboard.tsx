@@ -29,6 +29,19 @@ const RateMap = dynamicImport(() => import("@/components/RateMap"), {
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
 
+/** Progress of today's background rate collection. */
+interface Hydration {
+  runDate: string;
+  cursor: number;
+  total: number;
+  rowsWritten: number;
+  lastTickAt: string | null;
+  finishedAt: string | null;
+  percent: number;
+  status: "idle" | "collecting" | "complete";
+  errors?: string[];
+}
+
 interface ProfileStub {
   id: number;
   name: string;
@@ -47,6 +60,30 @@ function binOf(price: number | null, mkt: number | null): string {
 }
 
 // A hotel key is g<loc>-d<hotel>; TripAdvisor resolves the short review URL.
+/**
+ * A column heading a person can read at a glance.
+ *
+ * "HOLIDAY INN EXPRESS & SUITES DESTIN E - COMMONS MALL" is the property's
+ * legal name; as a table header it stretches the grid until the prices stop
+ * fitting. The distinguishing part is the brand plus whatever follows the
+ * location, so the descriptive tail is dropped and the full name stays in the
+ * hover tooltip, where it is available without costing width.
+ */
+function shortHotelName(name: string): string {
+  let short = name
+    // Everything after a dash is a locality or landmark: "— Commons Mall".
+    .replace(/\s*[-–—]\s.*$/, "")
+    // Franchise wrappers add length and no information in a compset.
+    .replace(/\s+by\s+(ihg|marriott|hilton|wyndham|choice|hyatt|hotels?)\b.*$/i, "")
+    .replace(/,?\s+(an?|the)\s+\w+\s+hotel\b.*$/i, "")
+    .replace(/\s+&\s+suites\b/i, "")
+    .replace(/\s+(hotel|inn|suites)\s+&\s+(suites|conference center)\b/i, " $1")
+    .trim();
+  // Never abbreviate into ambiguity.
+  if (short.length < 6) short = name;
+  return short.length > 26 ? `${short.slice(0, 25).trimEnd()}…` : short;
+}
+
 function tripAdvisorUrl(hotelId: string): string {
   return `https://www.tripadvisor.com/Hotel_Review-${hotelId}-Reviews.html`;
 }
@@ -101,6 +138,7 @@ export default function Dashboard() {
   const [checks, setChecks] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+  const [hydration, setHydration] = useState<Hydration | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [drawerDate, setDrawerDate] = useState<string | null>(null);
   const [editingDate, setEditingDate] = useState<string | null>(null);
@@ -222,51 +260,62 @@ export default function Dashboard() {
 
 
 
-  // The server can only work for ~60s at a time, so the refresh is driven
-  // from here in chunks until the run reports it is finished.
+  // Collection happens in the background now, so this asks for it and then
+  // watches. The old version drove the whole scrape from here, sixty seconds
+  // at a time, which is why the dashboard sat on "Fetching rates…" and
+  // eventually took a gateway timeout.
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const readHydration = useCallback(async () => {
+    try {
+      const res = await fetch("/api/refresh");
+      if (!res.ok) return null;
+      const state = (await res.json()) as Hydration;
+      setHydration(state);
+      return state;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // While a run is in flight, check on it and pull in the rates that have
+  // landed. Polling stops as soon as the day is complete.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function watch() {
+      const state = await readHydration();
+      if (cancelled) return;
+      if (state && state.status === "collecting") {
+        await load();
+        if (cancelled) return;
+        pollTimer.current = setTimeout(watch, 20_000);
+      }
+    }
+
+    watch();
+    return () => {
+      cancelled = true;
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    };
+    // Deliberately keyed on the profile only: this is a background watch, not
+    // a per-render effect.
+  }, [profileId, readHydration, load]);
+
   async function refresh() {
     setRefreshing(true);
-    setRefreshMsg("Fetching rates…");
-    let offset = 0;
-    let written = 0;
-    const problems: string[] = [];
+    setRefreshMsg(null);
     try {
-      for (let guard = 0; guard < 60; guard++) {
-        const res = await fetch(`/api/refresh?offset=${offset}`, { method: "POST" });
-        const text = await res.text();
-        let j: {
-          rowsWritten?: number;
-          errors?: string[];
-          error?: string;
-          total?: number;
-          nextOffset?: number | null;
-        };
-        try {
-          j = JSON.parse(text);
-        } catch {
-          throw new Error(`server returned ${res.status}`);
-        }
-        if (!res.ok) throw new Error(j.error ?? "Refresh failed");
-        written += j.rowsWritten ?? 0;
-        if (j.errors?.length) problems.push(...j.errors);
-        const total = j.total ?? 0;
-        if (j.nextOffset == null) {
-          setRefreshMsg(
-            problems.length
-              ? `Fetched ${written} rates with ${problems.length} error(s): ${problems[0]}`
-              : `Fetched ${written} rates.`
-          );
-          break;
-        }
-        offset = j.nextOffset;
-        setRefreshMsg(
-          `Fetching rates… ${Math.min(offset, total)} of ${total} (${written} stored)`
-        );
-      }
+      const res = await fetch("/api/refresh", { method: "POST" });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error ?? "Could not queue a refresh");
+      setHydration(j as Hydration);
+      setRefreshMsg(
+        "Collecting rates in the background. You can carry on — the grid fills in as they arrive."
+      );
       await load();
-      await fillMap();
     } catch (e) {
-      setRefreshMsg(`Refresh failed: ${(e as Error).message}`);
+      setRefreshMsg(`Could not queue a refresh: ${(e as Error).message}`);
     } finally {
       setRefreshing(false);
     }
@@ -419,6 +468,17 @@ export default function Dashboard() {
   const comps = hotels.filter((h) => !h.is_mine);
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
 
+  // Nights past the end of what has been collected are all dashes and
+  // "set…" placeholders — a wall of nothing that pushed the real rows off
+  // screen. Everything after the last night with a price is dropped, and the
+  // count is reported instead so the absence is explained rather than shown.
+  const lastPriced = rows.reduce(
+    (last, r, i) => (r.compCount > 0 || r.soldOutCount > 0 || r.myPrice != null ? i : last),
+    -1
+  );
+  const visibleRows = lastPriced >= 0 ? rows.slice(0, lastPriced + 1) : rows.slice(0, 1);
+  const hiddenRows = rows.length - visibleRows.length;
+
   const next30 = rows.slice(0, 30);
   const parityRows = rows.filter((r) => r.signals?.parity != null);
   const stats = {
@@ -510,14 +570,21 @@ export default function Dashboard() {
             }
             title="Search nearby hotels, or take a suggested competitive set"
           >
-            Competitors
+            Find competitors
           </button>
           <button
             onClick={refresh}
-            disabled={refreshing || discovering}
+            disabled={refreshing || hydration?.status === "collecting"}
             className="btn-accent px-4 py-1.5 text-[13px]"
+            title={
+              hydration?.status === "collecting"
+                ? "Rates are being collected in the background"
+                : "Collect today's rates again"
+            }
           >
-            {refreshing ? "Fetching rates…" : "Refresh rates"}
+            {hydration?.status === "collecting"
+              ? `Collecting ${hydration.percent}%`
+              : "Refresh rates"}
           </button>
         </div>
       }
@@ -532,65 +599,76 @@ export default function Dashboard() {
         <div className="card mt-4 p-4 text-[13px]">
           <div className="kicker mb-1">Competitor set not discovered yet</div>
           This hotel is showing other tracked hotels in the same TripAdvisor
-          location as a stand-in. Click <b>Find competitors</b> to build its own
-          set by distance.
+          location as a stand-in.{" "}
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            className="underline"
+            style={{ color: "var(--accent)" }}
+          >
+            Find competitors
+          </button>{" "}
+          to build its own set by distance.
         </div>
       )}
 
       {!hasAnyData && (
         <div className="card mt-6 p-5 text-sm">
           <div className="kicker mb-1.5">No rates yet</div>
-          Hit <b>Refresh rates</b> to fetch live prices for the next{" "}
-          {profile.horizon_days} days. A daily job keeps it fresh afterwards.
+          {hydration?.status === "collecting"
+            ? `Collecting prices for the next ${profile.horizon_days} nights — ${hydration.percent}% done. They appear here as they land.`
+            : `A background job collects prices for the next ${profile.horizon_days} nights every morning. Use Refresh rates to start one now.`}
         </div>
       )}
 
-      {/* Stat tiles */}
-      <div className="stagger mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-        <StatTile
+      {/* One row, because these are a glance and not the point of the page.
+          The grid below is what people came for, so it starts higher up. */}
+      <div className="card mt-5 flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
+        <Metric
           value={String(stats.raise)}
-          label="nights with room to raise"
+          label="room to raise"
           tone={stats.raise > 0 ? "var(--delta-good-text)" : undefined}
+          hint="Nights where your rate sits below the market median"
         />
-        <StatTile value={String(stats.hot)} label="high-demand nights ahead" />
-        <StatTile
+        <Metric value={String(stats.hot)} label="high demand" hint="Nights ahead with unusual market strength" />
+        <Metric
           value={String(stats.high)}
-          label="nights priced above a soft market"
+          label="priced above a soft market"
           tone={stats.high > 0 ? "var(--status-critical)" : undefined}
+          hint="Nights where you are above the median and the market is soft"
         />
-        <StatTile
+        <Metric
           value={String(stats.parityCount)}
-          label={
-            stats.parityAvg != null
-              ? `nights an OTA undercuts your direct rate (avg ${fmt(stats.parityAvg)})`
-              : "nights an OTA undercuts your direct rate"
-          }
+          label={stats.parityAvg != null ? `OTA undercuts (avg ${fmt(stats.parityAvg)})` : "OTA undercuts"}
           tone={stats.parityCount > 0 ? "var(--status-critical)" : undefined}
+          hint="Nights an OTA is selling you below your own direct rate"
         />
-        <StatTile
+        <Metric
           value={stats.avg30 != null ? fmt(stats.avg30) : "—"}
-          label="avg market rate, next 30 nights"
+          label="avg market, 30 nights"
+          hint="Average market median across the next 30 nights"
         />
-        <div className="card card--lift px-4 py-3.5">
-          <div className="flex h-10 items-end gap-1" aria-label="Typical market rate by weekday">
+
+        <div className="ml-auto flex items-end gap-3">
+          <div className="flex h-8 items-end gap-1" aria-label="Typical market rate by weekday">
             {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
               const v = weekdayAvg.find((w) => w.weekday === wd)?.avgMedian ?? null;
               return (
                 <div
                   key={wd}
-                  className="grow-bar flex-1 rounded-t"
+                  className="grow-bar w-1.5 rounded-t"
                   title={v != null ? `${WEEKDAYS[wd]}: ${fmt(v)}` : `${WEEKDAYS[wd]}: no data`}
                   style={{
-                    height: v != null ? `${Math.max(8, (v / maxWeekday) * 100)}%` : "4px",
+                    height: v != null ? `${Math.max(10, (v / maxWeekday) * 100)}%` : "4px",
                     background: v != null ? "var(--series-1)" : "var(--gridline)",
                   }}
                 />
               );
             })}
           </div>
-          <p className="mt-2 text-xs" style={{ color: "var(--text-secondary)" }}>
-            typical market rate, Mon → Sun
-          </p>
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+            Mon → Sun
+          </span>
         </div>
       </div>
 
@@ -603,11 +681,9 @@ export default function Dashboard() {
         />
       )}
 
-      {/* View tabs */}
-      <TabBar tab={tab} onChange={setTab} />
-
-      {/* Which of your hotels this section is built around. Each rate view
-          carries its own copy so the choice is always in reach. */}
+      {/* Which of your hotels everything below is built around. It sits above
+          the tabs because it decides the data they show, not the other way
+          round. */}
       {tab !== "reports" && (
         <FocusBar
           baselines={baselines}
@@ -615,6 +691,9 @@ export default function Dashboard() {
           onChange={setBaselineId}
         />
       )}
+
+      {/* View tabs */}
+      <TabBar tab={tab} onChange={setTab} />
 
 
       {tab === "grid" && (
@@ -650,7 +729,7 @@ export default function Dashboard() {
                   {comps.map((h) => (
                     <th
                       key={h.hotel_id}
-                      className="th-label max-w-32 truncate px-3 py-2.5"
+                      className="th-label max-w-[8.5rem] truncate px-3 py-2.5"
                       style={{
                         borderBottom: "1px solid var(--border)",
                         // Another of your own hotels in this compset: it
@@ -676,7 +755,7 @@ export default function Dashboard() {
                         className="hover:underline"
                         style={{ color: "inherit" }}
                       >
-                        {h.name}
+                        {shortHotelName(h.name)}
                       </a>
                     </th>
                   ))}
@@ -695,7 +774,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {visibleRows.map((r) => (
                   <GridRowView
                     key={r.date}
                     row={r}
@@ -721,6 +800,15 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
+
+          {hiddenRows > 0 && (
+            <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
+              {hydration?.status === "collecting"
+                ? `${hiddenRows} further night${hiddenRows === 1 ? "" : "s"} are still being collected (${hydration.percent}% done) and appear as their prices arrive.`
+                : `${hiddenRows} further night${hiddenRows === 1 ? "" : "s"} have no prices yet, so they are hidden rather than shown empty.`}
+            </p>
+          )}
+
           <div
             className="mt-3 flex flex-wrap items-center gap-3 text-xs"
             style={{ color: "var(--text-secondary)" }}
@@ -1152,21 +1240,28 @@ function Mark() {
   );
 }
 
-function StatTile({ value, label, tone }: { value: string; label: string; tone?: string }) {
+function Metric({
+  value,
+  label,
+  tone,
+  hint,
+}: {
+  value: string;
+  label: string;
+  tone?: string;
+  hint?: string;
+}) {
   return (
-    <div className="card card--lift px-4 py-3.5">
-      <div
+    <div className="flex items-baseline gap-2" title={hint}>
+      <span
         className="tabular-nums"
-        style={{
-          font: "600 30px/1.1 var(--font-heading)",
-          color: tone ?? "var(--text-primary)",
-        }}
+        style={{ font: "600 20px/1.1 var(--font-heading)", color: tone ?? "var(--text-primary)" }}
       >
         {value}
-      </div>
-      <p className="mt-1 text-xs leading-snug" style={{ color: "var(--text-secondary)" }}>
+      </span>
+      <span className="text-xs leading-snug" style={{ color: "var(--text-secondary)" }}>
         {label}
-      </p>
+      </span>
     </div>
   );
 }
@@ -1851,7 +1946,7 @@ function HistoryDrawer({
                         className="hover:underline"
                         style={{ color: "inherit" }}
                       >
-                        {h.name}
+                        {shortHotelName(h.name)}
                       </a>
                       {h.is_mine && (
                         <span className="ml-1.5 text-xs" style={{ color: "var(--accent)" }}>

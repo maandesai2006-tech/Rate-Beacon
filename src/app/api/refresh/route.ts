@@ -1,20 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runSnapshot } from "@/lib/snapshot";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
+import { hydrationState, queueHydration } from "@/lib/hydration";
 
-// Vercel's Hobby plan stops a function at 60s, so a full refresh is done in
-// chunks: each call fetches a bounded slice and reports where to resume.
-export const maxDuration = 60;
+export const dynamic = "force-dynamic";
 
-const CHUNK = 220;
-
+// Refreshing rates is a request, not a wait.
+//
+// This used to run the scrape in the request and hand the browser a loop to
+// drive: thousands of upstream calls, sixty seconds at a time, with the
+// dashboard showing "Fetching rates…" until something timed out. Now it moves
+// the day's cursor back to the start and returns; the background run picks it
+// up on its next tick, and the dashboard shows progress instead of blocking.
 export async function POST(req: NextRequest) {
-  const offset = Number(req.nextUrl.searchParams.get("offset")) || 0;
-  const limit = Number(req.nextUrl.searchParams.get("limit")) || CHUNK;
-  const maxDates = Number(req.nextUrl.searchParams.get("maxDates")) || undefined;
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+
   try {
-    const result = await runSnapshot(maxDates, { offset, limit });
-    return NextResponse.json(result);
+    const state = await queueHydration();
+    return NextResponse.json({
+      ...state,
+      queued: true,
+      note: "Rates are being collected in the background. This page updates as they land — you do not have to wait here.",
+    });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
+}
+
+// Progress, for the dashboard to poll.
+export async function GET(req: NextRequest) {
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  return NextResponse.json(await hydrationState());
 }
