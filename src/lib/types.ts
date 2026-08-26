@@ -73,7 +73,7 @@ export type Advice = "raise" | "review_low" | "review_high" | "in_line" | null;
 export interface RowSignals {
   holiday: string | null; // holiday name landing on this date
   nearHoliday: boolean; // date sits inside a long-weekend window
-  weather: { tMax: number; precipProb: number; label: string } | null;
+  weather: { tMax: number; tMin: number; precipProb: number; label: string } | null;
   eventCount: number;
   topEvents: string[]; // up to 3 names
   paceDelta: number | null; // change in sold-out comp count vs ~1 week ago

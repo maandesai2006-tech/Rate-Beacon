@@ -113,6 +113,10 @@ export default function RateMap({
     available: boolean;
     detail: string;
   } | null>(null);
+  const [tempStatus, setTempStatus] = useState<{
+    available: boolean;
+    detail: string;
+  } | null>(null);
   const [pois, setPois] = useState<Poi[]>([]);
   const [poiNote, setPoiNote] = useState<string | null>(null);
   const [poiBusy, setPoiBusy] = useState(false);
@@ -202,6 +206,22 @@ export default function RateMap({
     if (!bounds.isValid()) return;
     map.fitBounds(bounds, { padding: [48, 48], maxZoom: 15 });
     fitDone.current = true;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/map/weather/status")
+      .then((r) => r.json())
+      .then((j: { available?: boolean; detail?: string }) => {
+        if (cancelled) return;
+        setTempStatus({ available: Boolean(j.available), detail: j.detail ?? "" });
+      })
+      .catch(() => {
+        if (!cancelled) setTempStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -600,7 +620,9 @@ export default function RateMap({
           (k) => {
             const on = layers[k];
             const swatch = k in POI_STYLE ? `var(${POI_STYLE[k as PoiKind].token})` : null;
-            const needsKey = k === "traffic" && trafficStatus?.available === false;
+            const needsKey =
+              (k === "traffic" && trafficStatus?.available === false) ||
+              (k === "temperature" && tempStatus?.available === false);
             return (
               <button
                 key={k}
@@ -608,9 +630,11 @@ export default function RateMap({
                 className="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
                 aria-pressed={on}
                 title={
-                  needsKey
-                    ? "Live traffic needs a free TomTom key — set NEXT_PUBLIC_TOMTOM_KEY on the deployment"
-                    : LAYER_LABEL[k]
+                  k === "traffic" && trafficStatus?.available === false
+                    ? trafficStatus.detail
+                    : k === "temperature" && tempStatus?.available === false
+                      ? tempStatus.detail
+                      : LAYER_LABEL[k]
                 }
                 style={
                   on
@@ -644,6 +668,13 @@ export default function RateMap({
           {poiBusy ? "Loading places…" : poiNote ? poiNote : `${pois.length} places in view`}
         </span>
       </div>
+
+      {layers.temperature && tempStatus && !tempStatus.available && (
+        <p className="mb-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {tempStatus.detail} Radar is unaffected — it comes from a public
+          NEXRAD mosaic and needs no key.
+        </p>
+      )}
 
       {layers.traffic && trafficStatus && !trafficStatus.available && (
         <p className="mb-2 text-[11px]" style={{ color: "var(--text-muted)" }}>

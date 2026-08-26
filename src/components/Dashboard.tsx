@@ -1515,8 +1515,8 @@ function GridRowView({
           )}
           {row.signals?.weather && (
             <ContextChip
-              label={`${row.signals.weather.tMax}°${row.signals.weather.precipProb >= 40 ? ` ${row.signals.weather.label}` : ""}`}
-              title={`Forecast: ${row.signals.weather.label}, high ${row.signals.weather.tMax}°F, ${row.signals.weather.precipProb}% precip`}
+              label={`${row.signals.weather.tMax}°/${row.signals.weather.tMin}°${row.signals.weather.precipProb >= 40 ? ` ${row.signals.weather.label}` : ""}`}
+              title={`Forecast for this hotel on this night: ${row.signals.weather.label}, high ${row.signals.weather.tMax}°F, low ${row.signals.weather.tMin}°F, ${row.signals.weather.precipProb}% precip`}
             />
           )}
           {row.signals?.parity && (

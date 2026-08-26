@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 
 /**
  * The public header. Sign in and sign up are both always visible, because the
@@ -9,8 +8,6 @@ import { usePathname } from "next/navigation";
  * people ended up creating accounts when they meant to sign in.
  */
 export default function SiteNav({ signedIn }: { signedIn: boolean }) {
-  const pathname = usePathname();
-
   return (
     <header
       className="sticky top-0 z-40"
@@ -43,28 +40,11 @@ export default function SiteNav({ signedIn }: { signedIn: boolean }) {
 
         <nav className="ml-6 hidden items-center gap-1 sm:flex">
           <Link
-            href="/demo"
-            className="rounded-lg px-3 py-1.5 text-[13px] no-underline"
-            style={{
-              color: pathname === "/demo" ? "var(--accent)" : "var(--text-secondary)",
-              fontWeight: pathname === "/demo" ? 600 : 400,
-            }}
-          >
-            Live demo
-          </Link>
-          <Link
             href="/#how"
             className="rounded-lg px-3 py-1.5 text-[13px] no-underline"
             style={{ color: "var(--text-secondary)" }}
           >
             How it works
-          </Link>
-          <Link
-            href="/#pricing"
-            className="rounded-lg px-3 py-1.5 text-[13px] no-underline"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Pricing
           </Link>
         </nav>
 

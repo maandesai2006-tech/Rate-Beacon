@@ -209,10 +209,18 @@ async function buildGrid(
 
   // External demand signals (all best-effort).
   const horizonYears = [...new Set([today, horizonEnd].map((d) => Number(d.slice(0, 4))))];
+  // Weather belongs to the property being looked at, not to the account. The
+  // profile's coordinates are a market centroid — often the wrong town — so a
+  // Destin hotel was showing Pensacola's forecast and switching focus changed
+  // nothing. The focused hotel's own position is used when it has one.
+  const focused = byId.get(activeBaselineId ?? "");
+  const weatherLat = focused?.latitude ?? profile.latitude;
+  const weatherLon = focused?.longitude ?? profile.longitude;
+
   const [holidays, weather, eventsRes] = await Promise.all([
     getHolidays(profile.country_code || "US", horizonYears),
-    profile.latitude != null && profile.longitude != null
-      ? getWeather(profile.latitude, profile.longitude)
+    weatherLat != null && weatherLon != null
+      ? getWeather(weatherLat, weatherLon)
       : Promise.resolve(new Map()),
     supa
       .from("events")

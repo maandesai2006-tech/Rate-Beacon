@@ -9,6 +9,7 @@ export interface Holiday {
 
 export interface DayWeather {
   tMax: number; // °F
+  tMin: number; // °F
   precipProb: number; // 0..100
   label: string; // "clear", "rain", ...
 }
@@ -68,7 +69,7 @@ export async function getWeather(
   try {
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-      `&daily=weather_code,temperature_2m_max,precipitation_probability_mean` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_mean` +
       `&temperature_unit=fahrenheit&forecast_days=16&timezone=auto`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(String(res.status));
@@ -77,6 +78,7 @@ export async function getWeather(
         time?: string[];
         weather_code?: number[];
         temperature_2m_max?: number[];
+        temperature_2m_min?: number[];
         precipitation_probability_mean?: number[];
       };
     };
@@ -85,6 +87,7 @@ export async function getWeather(
     (d?.time ?? []).forEach((date, i) => {
       map.set(date, {
         tMax: Math.round(d?.temperature_2m_max?.[i] ?? 0),
+        tMin: Math.round(d?.temperature_2m_min?.[i] ?? 0),
         precipProb: Math.round(d?.precipitation_probability_mean?.[i] ?? 0),
         label: weatherLabel(d?.weather_code?.[i] ?? -1),
       });

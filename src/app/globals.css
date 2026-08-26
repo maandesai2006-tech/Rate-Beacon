@@ -291,6 +291,28 @@ h1, h2, h3, h4, h5, h6 {
 .row-hover:hover { background: color-mix(in oklab, var(--accent) 6%, transparent) !important; }
 
 /* ── Motion ────────────────────────────────────────────────────────────── */
+/* Anchor jumps glide rather than cut. Respected only when the reader has not
+   asked for reduced motion — see the media query at the end of this file. */
+html {
+  scroll-behavior: smooth;
+}
+
+/* The hero's scroll cue: the mouse body breathes, the wheel drifts down. */
+.hero-scroll-cue {
+  animation: rb-cue-pulse 2.6s ease-in-out infinite;
+}
+.hero-scroll-wheel {
+  animation: rb-cue-wheel 2.6s ease-in-out infinite;
+}
+@keyframes rb-cue-pulse {
+  0%, 100% { opacity: 0.45; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(3px); }
+}
+@keyframes rb-cue-wheel {
+  0%, 100% { transform: translateY(0); opacity: 0.9; }
+  55% { transform: translateY(7px); opacity: 0.25; }
+}
+
 @keyframes rb-rise {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
@@ -339,6 +361,7 @@ h1, h2, h3, h4, h5, h6 {
     transition-duration: 0.001ms !important;
   }
   .app-header[data-hidden="true"] { transform: none; }
+  html { scroll-behavior: auto; }
 }
 
 /* ── Diverging price-vs-market bins (numbers stay printed) ─────────────── */

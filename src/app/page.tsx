@@ -2,6 +2,14 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE } from "@/lib/session";
 import SiteNav from "@/components/SiteNav";
+import Reveal from "@/components/Reveal";
+
+// The hero plays a video when one is configured — a generated clip from
+// Higgsfield, or any other MP4 or WebM the deployment wants to host. It is a
+// URL rather than a bundled asset so swapping the clip is an environment
+// change, not a rebuild, and the page renders the same without it.
+const HERO_VIDEO_SRC = process.env.NEXT_PUBLIC_HERO_VIDEO_URL ?? null;
+const HERO_VIDEO_POSTER = process.env.NEXT_PUBLIC_HERO_POSTER_URL ?? null;
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +17,7 @@ export const dynamic = "force-dynamic";
 //
 // A visitor decides whether this is worth an account in about fifteen seconds,
 // and they decide it by seeing the product, not by reading about it. So the
-// page leads with what the grid actually looks like and puts a live demo one
-// click away — no form in front of it.
+// page leads with the grid itself and offers exactly one thing to do.
 
 const FEATURES = [
   {
@@ -60,17 +67,50 @@ export default async function LandingPage() {
     <div style={{ background: "var(--page)", minHeight: "100vh" }}>
       <SiteNav signedIn={signedIn} />
 
-      {/* Hero */}
-      <section className="relative overflow-hidden">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(60% 50% at 50% -10%, color-mix(in oklab, var(--accent) 14%, transparent), transparent 70%)",
-          }}
-        />
-        <div className="relative mx-auto max-w-3xl px-6 pb-14 pt-20 text-center sm:pt-28">
+      {/* Hero
+          Full-height, and built to sit over a video. The background container
+          is deliberately empty until a source is configured: an empty <video>
+          element would show a black rectangle, so the gradient stands in and
+          the markup underneath is the same either way. */}
+      <section
+        className="relative flex flex-col items-center justify-center overflow-hidden"
+        style={{ minHeight: "100vh" }}
+      >
+        <div aria-hidden className="absolute inset-0 overflow-hidden">
+          {HERO_VIDEO_SRC ? (
+            <video
+              className="h-full w-full object-cover"
+              src={HERO_VIDEO_SRC}
+              poster={HERO_VIDEO_POSTER ?? undefined}
+              autoPlay
+              muted
+              loop
+              playsInline
+            />
+          ) : (
+            <div
+              className="h-full w-full"
+              style={{
+                background:
+                  "radial-gradient(70% 55% at 50% -5%, color-mix(in oklab, var(--accent) 18%, transparent), transparent 72%), var(--page)",
+              }}
+            />
+          )}
+
+          {/* The readability layer. Frosted rather than flat, so a moving
+              picture stays visible underneath without ever competing with the
+              headline. */}
+          <div
+            className="absolute inset-0"
+            style={{
+              background:
+                "linear-gradient(180deg, color-mix(in oklab, var(--page) 72%, transparent) 0%, color-mix(in oklab, var(--page) 88%, transparent) 55%, var(--page) 100%)",
+              backdropFilter: HERO_VIDEO_SRC ? "blur(3px) saturate(115%)" : undefined,
+            }}
+          />
+        </div>
+
+        <div className="relative mx-auto max-w-3xl px-6 py-24 text-center">
           <span
             className="inline-block rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em]"
             style={{
@@ -100,22 +140,44 @@ export default async function LandingPage() {
             pricing call takes two minutes instead of an hour of tab-flipping.
           </p>
 
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <Link href="/signup" className="btn-accent px-6 py-3 text-[15px] no-underline">
-              Start free
-            </Link>
-            <Link href="/demo" className="btn-ghost px-6 py-3 text-[15px] no-underline">
-              See a live demo
+          <div className="mt-9 flex justify-center">
+            <Link
+              href={signedIn ? "/app" : "/signup"}
+              className="btn-accent px-8 py-4 text-[16px] no-underline"
+              style={{ boxShadow: "var(--shadow-lg)" }}
+            >
+              Open dashboard
             </Link>
           </div>
-          <p className="mt-3 text-xs" style={{ color: "var(--text-muted)" }}>
-            No card. The demo needs no account.
-          </p>
         </div>
+
+        {/* Scroll cue. Anchored to the section rather than the viewport so it
+            scrolls away with the hero instead of following the page down. */}
+        <a
+          href="#how"
+          aria-label="See what it does"
+          className="absolute bottom-8 left-1/2 -translate-x-1/2 no-underline"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <span className="hero-scroll-cue inline-flex flex-col items-center gap-1.5">
+            <svg width="22" height="34" viewBox="0 0 22 34" fill="none" aria-hidden>
+              <rect
+                x="1"
+                y="1"
+                width="20"
+                height="32"
+                rx="10"
+                stroke="currentColor"
+                strokeWidth="1.4"
+              />
+              <circle className="hero-scroll-wheel" cx="11" cy="10" r="2.4" fill="currentColor" />
+            </svg>
+          </span>
+        </a>
       </section>
 
       {/* What it looks like */}
-      <section className="mx-auto max-w-5xl px-6 pb-20">
+      <Reveal className="mx-auto max-w-5xl px-6 pb-20">
         <div
           className="overflow-hidden rounded-xl"
           style={{ border: "1px solid var(--border)", boxShadow: "var(--shadow-lg)" }}
@@ -125,10 +187,11 @@ export default async function LandingPage() {
         <p className="mt-3 text-center text-xs" style={{ color: "var(--text-muted)" }}>
           The rate grid, as it appears on a live account.
         </p>
-      </section>
+      </Reveal>
 
       {/* Features */}
-      <section id="how" className="mx-auto max-w-5xl px-6 pb-6">
+      <Reveal className="mx-auto max-w-5xl px-6 pb-6" delay={60}>
+        <section id="how" style={{ scrollMarginTop: 96 }}>
         <h2
           className="text-center text-2xl font-semibold tracking-tight sm:text-3xl"
           style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
@@ -146,8 +209,9 @@ export default async function LandingPage() {
               </p>
             </div>
           ))}
-        </div>
-      </section>
+          </div>
+        </section>
+      </Reveal>
 
       {/* Steps */}
       <section className="mx-auto max-w-5xl px-6 py-20">
@@ -177,45 +241,12 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Pricing */}
-      <section id="pricing" className="mx-auto max-w-3xl px-6 pb-20">
-        <h2
-          className="text-center text-2xl font-semibold tracking-tight sm:text-3xl"
-          style={{ color: "var(--text-primary)", fontFamily: "var(--font-heading)" }}
-        >
-          Pricing
-        </h2>
-        <div className="card mt-8 p-8 text-center">
-          <p className="kicker">Early access</p>
-          <p
-            className="mt-2"
-            style={{ font: "600 40px/1 var(--font-heading)", color: "var(--text-primary)" }}
-          >
-            Free
-          </p>
-          <p className="mt-3 text-sm" style={{ color: "var(--text-secondary)" }}>
-            While the product is in early access it is free for one property and
-            its competitive set. Get in touch before adding a portfolio and we
-            will sort out something sensible.
-          </p>
-          <Link href="/signup" className="btn-accent mt-6 inline-block px-6 py-3 text-[15px] no-underline">
-            Create an account
-          </Link>
-        </div>
-      </section>
-
       <footer style={{ borderTop: "1px solid var(--border)" }}>
         <div
           className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-5 gap-y-2 px-6 py-6 text-xs"
           style={{ color: "var(--text-muted)" }}
         >
-          <span>Rate Beacon</span>
-          <Link href="/demo" className="no-underline" style={{ color: "var(--text-muted)" }}>
-            Live demo
-          </Link>
-          <Link href="/login" className="no-underline" style={{ color: "var(--text-muted)" }}>
-            Log in
-          </Link>
+          <span>© {new Date().getFullYear()} Rate Beacon</span>
           <span className="ml-auto">
             Rates from public meta-search listings. Weather from Open-Meteo and NOAA.
           </span>

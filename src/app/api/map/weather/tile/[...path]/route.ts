@@ -44,12 +44,7 @@ export async function GET(
   ctx: { params: Promise<{ path: string[] }> }
 ) {
   const key = process.env.OPENWEATHER_API_KEY;
-  if (!key) {
-    return NextResponse.json(
-      { error: "OPENWEATHER_API_KEY is not set on the deployment." },
-      { status: 503 }
-    );
-  }
+  if (!key) return blankTile("no-key");
 
   const { path } = await ctx.params;
   if (path.length !== 4) {
@@ -92,13 +87,28 @@ export async function GET(
   );
   v1.searchParams.set("appid", key);
   const res = await fetchTile(v1);
-  if (!res.ok) {
-    return NextResponse.json(
-      { error: `OpenWeather returned ${res.status}` },
-      { status: 502 }
-    );
-  }
+  if (!res.ok) return blankTile(`upstream-${res.status}`);
   return imageResponse(res.body, res.contentType, date ? "maps-1.0-current-fallback" : "maps-1.0-current");
+}
+
+// A tile that cannot be fetched is served as one transparent pixel rather
+// than an error. Leaflet has no way to show a JSON body — it just draws a
+// broken image and fills the console — so the map stays clean and the reason
+// travels in a header, with /api/map/weather/status giving it in words.
+const TRANSPARENT_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  "base64"
+);
+
+function blankTile(reason: string) {
+  return new NextResponse(new Uint8Array(TRANSPARENT_PNG), {
+    status: 200,
+    headers: {
+      "Content-Type": "image/png",
+      "X-Tile-Status": reason,
+      "Cache-Control": "public, s-maxage=300",
+    },
+  });
 }
 
 async function fetchTile(url: URL): Promise<{
