@@ -91,7 +91,6 @@ async function buildGrid(
   ]);
   if (linksRes.error) throw new Error(`Database query failed: ${linksRes.error.message}`);
 
-  const roleById = new Map((linksRes.data ?? []).map((l) => [l.hotel_id, l.role]));
   const allTracked: Hotel[] = (linksRes.data ?? []).map((l) => ({
     hotel_id: l.hotel_id,
     name: l.hotels?.name ?? l.hotel_id,
@@ -157,18 +156,11 @@ async function buildGrid(
       .map((h) => ({ ...h, is_mine: false, is_portfolio: ownedIds.has(h.hotel_id) })),
   ];
 
-  // Map context: located hotels in the profile that aren't in the grid. They
-  // carry prices for the map only and never affect the median or advice.
-  const gridIds = new Set(hotels.map((h) => h.hotel_id));
-  const mapExtras: Hotel[] = allTracked.filter(
-    (h) =>
-      !gridIds.has(h.hotel_id) &&
-      roleById.get(h.hotel_id) === "map" &&
-      h.latitude != null &&
-      h.longitude != null
-  );
-
-  const hotelIds = [...gridIds, ...mapExtras.map((h) => h.hotel_id)];
+  // Map-context hotels used to be priced alongside the grid so pins had
+  // numbers on them. With the map gone they are thousands of upstream calls a
+  // day for something nothing reads, so they are no longer fetched here or
+  // collected at all.
+  const hotelIds = [...new Set(hotels.map((h) => h.hotel_id))];
   const horizonEnd = addDaysISO(today, profile.horizon_days);
   const [latestRes, histRes, myRatesRes, lastCapRes] = await Promise.all([
     supa
@@ -200,12 +192,6 @@ async function buildGrid(
       .limit(1),
   ]);
 
-  const { data: mapPlaceRows } = await supa
-    .from("map_places")
-    .select("osm_id, name, latitude, longitude, distance_km, hotel_id")
-    .eq("profile_id", profile.id)
-    .eq("baseline_hotel_id", activeBaselineId ?? "")
-    .order("distance_km");
 
   // External demand signals (all best-effort).
   const horizonYears = [...new Set([today, horizonEnd].map((d) => Number(d.slice(0, 4))))];
@@ -291,9 +277,7 @@ async function buildGrid(
 
   const rows: GridRow[] = dateRange(today, profile.horizon_days).map((date) => {
     const cells: Record<string, RateCell> = {};
-    // Map-context hotels get cells too so the map can show their prices;
-    // they are excluded from the competitor stats below.
-    for (const h of [...hotels, ...mapExtras]) {
+    for (const h of hotels) {
       const s = latestByKey.get(`${h.hotel_id}|${date}`);
       cells[h.hotel_id] = {
         price: s?.price ?? null,
@@ -443,8 +427,6 @@ async function buildGrid(
     compsAreDiscovered,
     rankStats,
     hotels,
-    mapHotels: mapExtras,
-    mapPlaces: mapPlaceRows ?? [],
     rows,
     weekdayAvg,
     lastCapturedAt: lastCapRes.data?.[0]?.captured_at ?? null,

@@ -1,7 +1,12 @@
 {
   "crons": [
-    { "path": "/api/cron/snapshot", "schedule": "0 6 * * *" },
-    { "path": "/api/cron/map", "schedule": "30 6 * * *" },
-    { "path": "/api/cron/reports", "schedule": "0 12 * * *" }
+    {
+      "path": "/api/cron/snapshot",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/reports",
+      "schedule": "0 12 * * *"
+    }
   ]
 }

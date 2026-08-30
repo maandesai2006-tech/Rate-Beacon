@@ -1,8 +1,7 @@
 "use client";
 
-// Plain-language forecast at each of your own hotels, matching whichever range
-// the map's timeline is set to. Data is Open-Meteo — free, keyless, one request
-// covering every hotel.
+// Plain-language forecast at each of your own hotels. Data is Open-Meteo —
+// free, keyless, one request covering every hotel.
 //
 // Deliberately simple: a row per hotel, a card per hour or per day. No chart,
 // because the question this answers is "what is it doing at my property on
@@ -63,9 +62,8 @@ const RANGE_LABEL: Record<ForecastRange, string> = {
 };
 
 export default function HotelForecast({ profileId }: { profileId: number | null }) {
-  // The range control lives here rather than on the map, because this is the
-  // only thing it changes. Sitting above the map it looked like it drove the
-  // overlay, which it never did.
+  // Twelve hours by default: the next shift is what a duty manager is
+  // pricing against. The longer ranges are a click away.
   const [range, setRange] = useState<ForecastRange>("12h");
   const [rows, setRows] = useState<HotelForecastRow[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -75,7 +73,7 @@ export default function HotelForecast({ profileId }: { profileId: number | null 
     if (!profileId) return;
     let cancelled = false;
     setBusy(true);
-    fetch(`/api/map/forecast?profileId=${profileId}&range=${range}`)
+    fetch(`/api/conditions/forecast?profileId=${profileId}&range=${range}`)
       .then((r) => r.json())
       .then((j: { hotels?: HotelForecastRow[]; note?: string; error?: string }) => {
         if (cancelled) return;

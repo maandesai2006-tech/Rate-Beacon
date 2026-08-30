@@ -74,7 +74,11 @@ export default async function LandingPage() {
           the markup underneath is the same either way. */}
       <section
         className="relative flex flex-col items-center justify-center overflow-hidden"
-        style={{ minHeight: "100vh" }}
+        // The header is sticky, so it takes its height out of the first
+        // screen. Without subtracting it the hero runs 60px past the fold and
+        // the scroll cue sits below it, which is where a scroll cue is no use.
+        // svh, so mobile browser chrome does not do the same thing again.
+        style={{ minHeight: "calc(100svh - 61px)" }}
       >
         <div aria-hidden className="absolute inset-0 overflow-hidden">
           {HERO_VIDEO_SRC ? (

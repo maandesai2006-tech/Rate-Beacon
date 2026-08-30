@@ -70,14 +70,16 @@ export async function buildJobs(
   }
 
   const nameById = new Map(hotelRows?.map((h) => [h.hotel_id, h.name]) ?? []);
+  // "map" links existed to put prices on map pins. Nothing draws them now, so
+  // pricing them would be a few hundred upstream calls a day for data no
+  // screen reads.
+  const priceable = links.filter((l) => l.role !== "map");
   const profileById = new Map(profiles.map((p) => [p.id, p]));
   const tracked = new Map<string, TrackedHotel>();
-  for (const link of links) {
+  for (const link of priceable) {
     const p = profileById.get(link.profile_id);
     if (!p) continue;
-    // Map-only context hotels exist to give the map prices; a week is
-    // plenty and keeps the daily request count sane.
-    const horizon = link.role === "map" ? Math.min(7, p.horizon_days) : p.horizon_days;
+    const horizon = p.horizon_days;
     const existing = tracked.get(link.hotel_id);
     if (existing) {
       existing.horizon = Math.max(existing.horizon, horizon);

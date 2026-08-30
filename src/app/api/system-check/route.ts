@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { db, dbForAccount, tenantConfig } from "@/lib/db";
 import { hydrationState, registerSchedulerTarget } from "@/lib/hydration";
-import { hotelsNear, lastOverpassErrors } from "@/lib/overpass";
 
 // A one-click health report, in plain language. Every external dependency is
 // probed from the server (they are not reachable from a browser), so the
@@ -103,23 +102,7 @@ export async function GET() {
         : `Every parameter shape was rejected. ${listNotes.join(" | ")}`,
   });
 
-  // 4. Map source
-  // Use the same code path the map itself uses, so the check cannot disagree
-  // with the feature.
-  const t0 = Date.now();
-  const osm = await hotelsNear(30.478, -87.209, 3000, 5);
-  checks.push({
-    name: "Map source (OpenStreetMap)",
-    ok: osm.length > 0,
-    detail:
-      osm.length > 0
-        ? `Responding in ${Date.now() - t0}ms, ${osm.length} sample hotels nearby.`
-        : lastOverpassErrors.length > 0
-          ? `Every Overpass mirror refused: ${lastOverpassErrors.join(" | ")}`
-          : "No hotels found near the test point, and no mirror reported an error.",
-  });
-
-  // 5. Geocoding
+  // 4. Geocoding
   const geo = await timed(
     "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=Candlewood%20Suites%20Pensacola",
     { headers: { "User-Agent": "RateBeacon/1.0 (health check)" } }
@@ -130,7 +113,7 @@ export async function GET() {
     detail: geo.ok ? `Responding in ${geo.ms}ms.` : `HTTP ${geo.status}. ${geo.body.slice(0, 160)}`,
   });
 
-  // 6. Mail reader (runs outside Vercel, which cannot open IMAP sockets)
+  // 5. Mail reader (runs outside Vercel, which cannot open IMAP sockets)
   try {
     const url = process.env.SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -156,24 +139,23 @@ export async function GET() {
     checks.push({ name: "Mail reader", ok: false, detail: (e as Error).message });
   }
 
-  // 7. Coverage summary
+  // 6. Coverage summary
   try {
-    const [{ count: hotels }, { count: located }, { count: rated }, { count: places }] = await Promise.all([
+    const [{ count: hotels }, { count: located }, { count: rated }] = await Promise.all([
       supa.from("hotels").select("hotel_id", { count: "exact", head: true }),
       supa.from("hotels").select("hotel_id", { count: "exact", head: true }).not("latitude", "is", null),
       supa.from("hotels").select("hotel_id", { count: "exact", head: true }).not("rating", "is", null),
-      supa.from("map_places").select("id", { count: "exact", head: true }),
     ]);
     checks.push({
       name: "Coverage",
       ok: (located ?? 0) > 0,
-      detail: `${hotels ?? 0} hotels tracked · ${located ?? 0} placed on the map · ${rated ?? 0} with a review score · ${places ?? 0} nearby map pins.`,
+      detail: `${hotels ?? 0} hotels tracked · ${located ?? 0} with coordinates · ${rated ?? 0} with a review score.`,
     });
   } catch (e) {
     checks.push({ name: "Coverage", ok: false, detail: (e as Error).message });
   }
 
-  // 8. Tenant isolation
+  // 7. Tenant isolation
   //
   // Two accounts share one database, so the question that matters to a buyer
   // is whether the database itself refuses to hand one account another's rows
@@ -259,7 +241,7 @@ export async function GET() {
     checks.push({ name: "Tenant isolation", ok: false, detail: (e as Error).message });
   }
 
-  // 9. Rate collection
+  // 8. Rate collection
   //
   // The one check that answers "why is the grid empty?" — a day's collection
   // is thousands of upstream calls and runs in the background, so what matters

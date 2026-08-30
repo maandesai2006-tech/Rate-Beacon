@@ -173,20 +173,17 @@ export async function nearestTo(
 export interface DiscoverResult {
   baseline: string;
   comps: number;
-  mapExtras: number;
   errors: string[];
 }
 
 // Full run for one baseline: sync + geocode its location, take the nearest
-// `compCount` as competitors, then the nearest `perCompExtras` around each of
-// those as map-only context.
+// `compCount` as competitors by distance.
 export async function discoverForBaseline(
   supa: SupabaseClient,
   profileId: number,
   baselineId: string,
   near: string | null,
   compCount = 15,
-  perCompExtras = 3
 ): Promise<DiscoverResult> {
   const errors: string[] = [];
   const locationKey = locationKeyOf(baselineId);
@@ -198,7 +195,7 @@ export async function discoverForBaseline(
 
   const comps = await nearestTo(supa, baselineId, { limit: compCount });
   if (comps.length === 0) {
-    return { baseline: baselineId, comps: 0, mapExtras: 0, errors: [...errors, "no located neighbours yet — run again after geocoding catches up"] };
+    return { baseline: baselineId, comps: 0, errors: [...errors, "no located neighbours yet — run again after geocoding catches up"] };
   }
 
   // Persist the hotels themselves, then the baseline→comp edges.
@@ -232,52 +229,14 @@ export async function discoverForBaseline(
     }))
   );
 
-  // Map context: a few hotels around each competitor that aren't tracked.
-  const used = new Set<string>([baselineId, ...comps.map((c) => c.hotel_id)]);
-  const extras: Ranked[] = [];
-  for (const c of comps) {
-    const near3 = await nearestTo(supa, c.hotel_id, {
-      limit: perCompExtras,
-      exclude: new Set([...used, ...extras.map((e) => e.hotel_id)]),
-      maxKm: 8,
-    });
-    extras.push(...near3);
-  }
-  if (extras.length) {
-    await supa.from("hotels").upsert(
-      extras.map((e) => ({
-        hotel_id: e.hotel_id,
-        name: e.name,
-        latitude: e.latitude,
-        longitude: e.longitude,
-        city_code: locationKeyOf(e.hotel_id),
-      })),
-      { onConflict: "hotel_id" }
-    );
-    // Only add as map context where the hotel isn't already tracked.
-    const { data: existing } = await supa
-      .from("profile_hotels")
-      .select("hotel_id, role")
-      .eq("profile_id", profileId)
-      .returns<{ hotel_id: string; role: string }[]>();
-    const known = new Set((existing ?? []).map((e) => e.hotel_id));
-    const toAdd = extras.filter((e) => !known.has(e.hotel_id));
-    if (toAdd.length) {
-      await supa.from("profile_hotels").insert(
-        toAdd.map((e) => ({
-          profile_id: profileId,
-          hotel_id: e.hotel_id,
-          is_mine: false,
-          role: "map",
-        }))
-      );
-    }
-  }
+  // This used to also collect a ring of untracked hotels around each
+  // competitor as map context. With no map they were rows nothing displayed
+  // and — until the collector learned to skip them — a few hundred upstream
+  // calls a day. Discovery now returns the competitive set and nothing else.
 
   return {
     baseline: baselineId,
     comps: comps.length,
-    mapExtras: extras.length,
     errors,
   };
 }

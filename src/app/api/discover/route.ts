@@ -15,7 +15,6 @@ export async function POST(req: NextRequest) {
   const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
   const baselineId = req.nextUrl.searchParams.get("baselineId");
   const compCount = Number(req.nextUrl.searchParams.get("comps")) || 15;
-  const extras = Number(req.nextUrl.searchParams.get("extras")) || 3;
 
   try {
     // Bounded by the account either way: without it, passing any profile id
@@ -61,8 +60,7 @@ export async function POST(req: NextRequest) {
           profile.id,
           id,
           profile.city_name ?? null,
-          compCount,
-          extras
+          compCount
         )
       );
     }

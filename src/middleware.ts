@@ -16,8 +16,6 @@ const PUBLIC_API_PREFIXES = [
   "/api/auth",
   "/api/cron",
   "/api/demo",
-  // /api/map-set used to be here. It loops over profile baselines, so leaving
-  // it open let any visitor trigger work across every tenant.
 ];
 
 export function middleware(req: NextRequest) {

@@ -9,23 +9,11 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
-import type { Baseline, GridResponse, GridRow, HistoryPoint, Hotel, MapPlace, RankStat } from "@/lib/types";
+import type { Baseline, GridResponse, GridRow, HistoryPoint, Hotel, RankStat } from "@/lib/types";
 import Sparkline from "@/components/Sparkline";
 import ReportsPanel from "@/components/ReportsPanel";
 import HotelForecast from "@/components/HotelForecast";
 import CompsetPicker from "@/components/CompsetPicker";
-import dynamicImport from "next/dynamic";
-
-// Leaflet touches window on import, so the map is client-only.
-const RateMap = dynamicImport(() => import("@/components/RateMap"), {
-  ssr: false,
-  loading: () => (
-    <div
-      className="pulsing"
-      style={{ height: 560, borderRadius: 10, background: "var(--surface-2)" }}
-    />
-  ),
-});
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
 
@@ -81,7 +69,7 @@ function shortHotelName(name: string): string {
     .trim();
   // Never abbreviate into ambiguity.
   if (short.length < 6) short = name;
-  return short.length > 26 ? `${short.slice(0, 25).trimEnd()}…` : short;
+  return short.length > 30 ? `${short.slice(0, 29).trimEnd()}…` : short;
 }
 
 function tripAdvisorUrl(hotelId: string): string {
@@ -104,12 +92,16 @@ interface TooltipState {
   lines: string[];
 }
 
-type Tab = "grid" | "trends" | "ladder" | "map" | "reports";
+// Three places to be: the overview you land on, the full grid, and the
+// reports. Trends, the ladder and conditions used to be tabs of their own;
+// they are sections of the overview now, because they are things you glance at
+// on the way to a decision rather than destinations.
+type Tab = "home" | "grid" | "reports";
 
 const TAB_STORAGE_KEY = "rb-tab";
 
 function isTab(v: string | null): v is Tab {
-  return v === "grid" || v === "trends" || v === "ladder" || v === "map" || v === "reports";
+  return v === "home" || v === "grid" || v === "reports";
 }
 type Theme = "light" | "dark";
 
@@ -122,7 +114,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   // The tab is a property of the app, not of the hotel being viewed, so it
   // survives switching hotels and reloading the page.
-  const [tab, setTabState] = useState<Tab>("grid");
+  const [tab, setTabState] = useState<Tab>("home");
   const setTab = useCallback((next: Tab) => {
     setTabState(next);
     try {
@@ -134,7 +126,6 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [mapping, setMapping] = useState(false);
   const [checks, setChecks] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null);
   const [checking, setChecking] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
@@ -231,8 +222,10 @@ export default function Dashboard() {
     load();
   }, [load]);
 
-  // Place any hotels that still lack coordinates so the map has points.
-  const fillMap = useCallback(async () => {
+  // Coordinates are still needed without a map: the conditions forecast reads
+  // the focused hotel's position, and competitor search measures a radius from
+  // it. So anything unplaced is geocoded quietly in the background.
+  const fillCoordinates = useCallback(async () => {
     for (let guard = 0; guard < 12; guard++) {
       const res = await fetch("/api/geocode?limit=20", { method: "POST" });
       if (!res.ok) return;
@@ -242,22 +235,16 @@ export default function Dashboard() {
     await load();
   }, [load]);
 
-  // If the map has no coordinates yet, place them in the background so the
-  // map is populated the next time it is opened — no manual step.
-  const mapFillStarted = useRef(false);
+  const geocodeStarted = useRef(false);
   useEffect(() => {
-    if (mapFillStarted.current || !data || !data.configured) return;
-    // Previously this only ran when *nothing* was placed, so a partially
-    // geocoded set stayed partial forever — 11 of 28 hotels on the map with no
-    // way to finish without pressing a button nobody knew to press.
-    const anyMissing = [...data.hotels, ...(data.mapHotels ?? [])].some(
-      (h) => h.latitude == null || h.longitude == null
-    );
+    if (geocodeStarted.current || !data || !data.configured) return;
+    // This once ran only when *nothing* was placed, so a partially geocoded
+    // set stayed partial forever.
+    const anyMissing = data.hotels.some((h) => h.latitude == null || h.longitude == null);
     if (!anyMissing) return;
-    mapFillStarted.current = true;
-    fillMap().catch(() => {});
-  }, [data, fillMap]);
-
+    geocodeStarted.current = true;
+    fillCoordinates().catch(() => {});
+  }, [data, fillCoordinates]);
 
 
   // Collection happens in the background now, so this asks for it and then
@@ -337,7 +324,7 @@ export default function Dashboard() {
       const r = j.results?.[0];
       setRefreshMsg(
         r
-          ? `Found ${r.comps} competitors and ${r.mapExtras} nearby hotels for the map. Refresh rates to price them.`
+          ? `Found ${r.comps} competitors by distance. Their rates collect on the next background run.`
           : "Discovery finished."
       );
       await load();
@@ -349,28 +336,6 @@ export default function Dashboard() {
   }
 
   // Rebuild the map's nearby-hotel set from OpenStreetMap for this profile.
-
-  async function refreshMapSet() {
-    if (!profileId) return;
-    setMapping(true);
-    setRefreshMsg(null);
-    try {
-      const res = await fetch(`/api/map-set?profileId=${profileId}&limit=30`, { method: "POST" });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error ?? "Map refresh failed");
-      const found = (j.results ?? []).reduce(
-        (a: number, r: { found?: number }) => a + (r.found ?? 0),
-        0
-      );
-      setRefreshMsg(`Map updated with ${found} nearby hotels.`);
-      await load();
-    } catch (e) {
-      setRefreshMsg(`Map refresh failed: ${(e as Error).message}`);
-    } finally {
-      setMapping(false);
-    }
-  }
-
 
   async function runSystemCheck() {
     setChecking(true);
@@ -463,7 +428,7 @@ export default function Dashboard() {
     );
   }
 
-  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats, mapHotels, mapPlaces, compsAreDiscovered } = data;
+  const { profile, hotels, rows, weekdayAvg, lastCapturedAt, baselines, rankStats, compsAreDiscovered } = data;
   const myHotel = hotels.find((h) => h.is_mine) ?? null;
   const comps = hotels.filter((h) => !h.is_mine);
   const hasAnyData = rows.some((r) => r.compCount > 0 || r.soldOutCount > 0);
@@ -552,14 +517,6 @@ export default function Dashboard() {
           <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-[13px]">
             Edit profile
           </Link>
-          <button
-            onClick={refreshMapSet}
-            disabled={mapping || refreshing}
-            className="btn-ghost px-3 py-1.5 text-[13px]"
-            title="Rebuild the map's nearby-hotel set from OpenStreetMap"
-          >
-            {mapping ? "Mapping…" : "Refresh map"}
-          </button>
           <button
             onClick={() => setPickerOpen((o) => !o)}
             className="btn-ghost px-3 py-1.5 text-[13px]"
@@ -834,15 +791,38 @@ export default function Dashboard() {
         </div>
       )}
 
-      {tab === "trends" && (
-        <div className="card rise mt-4 p-5">
-          <TrendChart rows={rows} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
-        </div>
-      )}
+      {tab === "home" && (
+        <div className="fade mt-4 flex flex-col gap-4">
+          {/* The two sections that lead somewhere. Everything below is a
+              glance; these are the two places there is more to see, so they
+              are the only ones that open. */}
+          <HomeSection
+            title="Rate grid"
+            subtitle={`Next ${Math.min(7, visibleRows.length)} nights against your compset`}
+            onOpen={() => setTab("grid")}
+          >
+            <GridDigest rows={visibleRows.slice(0, 7)} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
+          </HomeSection>
 
-      {tab === "ladder" && (
-        <div className="card rise mt-4 p-5">
-          <RateLadder rows={rows} hotels={hotels} fmt={fmt} rankStats={rankStats} />
+          <HomeSection
+            title="Manager reports"
+            subtitle="Last night's numbers and what the rules flagged"
+            onOpen={() => setTab("reports")}
+          >
+            <ReportsDigest profileId={profileId} />
+          </HomeSection>
+
+          <HomeSection title="Rate ladder" subtitle="Where you sit tonight, cheapest to dearest">
+            <RateLadder rows={rows} hotels={hotels} fmt={fmt} rankStats={rankStats} />
+          </HomeSection>
+
+          <HomeSection title="Trends" subtitle="How the market has moved across the horizon">
+            <TrendChart rows={rows} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
+          </HomeSection>
+
+          <HomeSection title="Conditions" subtitle="Forecast at each of your properties">
+            <HotelForecast profileId={profileId} />
+          </HomeSection>
         </div>
       )}
 
@@ -851,19 +831,6 @@ export default function Dashboard() {
           own focus picker over your own hotels. */}
       {tab === "reports" && (
         <ReportsPanel profileId={profileId} hotels={baselines} />
-      )}
-
-      {tab === "map" && (
-        <div className="card rise mt-4 p-5">
-          <MapPanel
-            rows={rows}
-            hotels={[...hotels, ...(mapHotels ?? [])]}
-            places={mapPlaces ?? []}
-            fmt={fmt}
-            theme={theme}
-            profileId={profileId}
-          />
-        </div>
       )}
 
       {/* Tooltip layer */}
@@ -968,8 +935,7 @@ function FocusBar({
       className="sticky z-20 -mx-1 mt-4 flex flex-wrap items-center gap-1.5 px-1 py-2.5"
       style={{
         top: 64,
-        background: "color-mix(in srgb, var(--page) 88%, transparent)",
-        backdropFilter: "blur(8px)",
+        background: "var(--page)",
         borderBottom: "1px solid var(--border)",
       }}
     >
@@ -1004,12 +970,251 @@ function FocusBar({
 }
 
 // Tabs with an indicator that slides between the active buttons.
+/**
+ * One card on the overview, so every section looks the same whether or not it
+ * leads anywhere.
+ *
+ * Sections that open a tab are buttons and say so; the rest are plain
+ * headings. The difference is deliberate — a card that looks clickable and
+ * is not is worse than one that never invited the click.
+ */
+function HomeSection({
+  title,
+  subtitle,
+  onOpen,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  onOpen?: () => void;
+  children: React.ReactNode;
+}) {
+  const header = (
+    <div className="flex items-baseline gap-3">
+      <h2 className="text-[15px] font-semibold" style={{ color: "var(--text-primary)" }}>
+        {title}
+      </h2>
+      <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+        {subtitle}
+      </span>
+      {onOpen && (
+        <span className="ml-auto text-[13px]" style={{ color: "var(--accent)" }}>
+          Open →
+        </span>
+      )}
+    </div>
+  );
+
+  return (
+    <section className="card p-5">
+      {onOpen ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="home-section-open w-full text-left"
+          aria-label={`Open ${title}`}
+        >
+          {header}
+        </button>
+      ) : (
+        header
+      )}
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * The week at a glance: your rate, the market median, and the call.
+ *
+ * Deliberately not the full grid — that is one click away and has every
+ * competitor in it. This is the part someone reads before deciding whether
+ * they need to look.
+ */
+function GridDigest({
+  rows,
+  fmt,
+  myName,
+}: {
+  rows: GridRow[];
+  fmt: (n: number) => string;
+  myName: string;
+}) {
+  if (rows.length === 0) {
+    return (
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        No nights priced yet. Collection runs in the background and fills this in.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full max-w-[640px] min-w-[460px] text-[13px]">
+        <thead>
+          <tr>
+            <th className="th-label px-2 py-2 text-left">Night</th>
+            <th className="th-label px-2 py-2 text-right">{myName}</th>
+            <th className="th-label px-2 py-2 text-right">Market median</th>
+            <th className="th-label px-2 py-2 text-right">Gap</th>
+            <th className="th-label px-2 py-2 text-left">Call</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const gap =
+              r.myPrice != null && r.median != null ? ((r.myPrice - r.median) / r.median) * 100 : null;
+            return (
+              <tr key={r.date} style={{ borderTop: "1px solid var(--gridline)" }}>
+                <td className="whitespace-nowrap px-2 py-2" style={{ color: "var(--text-secondary)" }}>
+                  {new Date(`${r.date}T12:00:00`).toLocaleDateString(undefined, {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </td>
+                <td className="px-2 py-2 text-right tabular-nums">
+                  {r.myPrice != null ? fmt(r.myPrice) : "—"}
+                </td>
+                <td className="px-2 py-2 text-right tabular-nums" style={{ color: "var(--text-secondary)" }}>
+                  {r.median != null ? fmt(r.median) : "—"}
+                </td>
+                <td
+                  className="px-2 py-2 text-right tabular-nums"
+                  style={{
+                    color:
+                      gap == null
+                        ? "var(--text-muted)"
+                        : gap >= 5
+                          ? "var(--div-high)"
+                          : gap <= -5
+                            ? "var(--div-low)"
+                            : "var(--text-secondary)",
+                  }}
+                >
+                  {gap == null ? "—" : `${gap > 0 ? "+" : ""}${gap.toFixed(0)}%`}
+                </td>
+                <td className="px-2 py-2" style={{ color: "var(--text-secondary)" }}>
+                  {r.advice ?? "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+interface DigestHotel {
+  hotelId: string;
+  name: string;
+  latestDate: string | null;
+  reportCount: number;
+  points: Record<string, number | null>[];
+  insights: { message: string; severity: string }[];
+}
+
+/**
+ * Last night, per property, with whatever the rules had to say.
+ *
+ * Reads the same endpoint the reports tab does, so the two can never disagree
+ * — this shows the last row of what that page charts.
+ */
+function ReportsDigest({ profileId }: { profileId: number | null }) {
+  const [hotels, setHotels] = useState<DigestHotel[] | null>(null);
+
+  useEffect(() => {
+    if (!profileId) return;
+    let cancelled = false;
+    fetch(`/api/reports/list?profileId=${profileId}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (!cancelled) setHotels(j.hotels ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setHotels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId]);
+
+  if (hotels == null) {
+    return (
+      <p className="pulsing text-sm" style={{ color: "var(--text-muted)" }}>
+        Loading…
+      </p>
+    );
+  }
+  if (hotels.length === 0) {
+    return (
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        No reports yet. Forward a night audit to the address on the reports tab
+        and they are read automatically from then on.
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {hotels.map((h) => {
+        const last = h.points[h.points.length - 1] ?? {};
+        const worst = h.insights.find((i) => i.severity === "critical") ?? h.insights[0];
+        return (
+          <div key={h.hotelId} className="rounded-lg p-4" style={{ background: "var(--surface-2)" }}>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                {h.name}
+              </span>
+              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                {h.latestDate ?? "—"}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[13px]">
+              <DigestFigure label="Occupancy" value={last.occupancy_pct} suffix="%" />
+              <DigestFigure label="ADR" value={last.adr} prefix="$" />
+              <DigestFigure label="RevPAR" value={last.revpar} prefix="$" />
+            </div>
+            <p className="mt-2 text-[12px]" style={{ color: worst ? "var(--text-secondary)" : "var(--text-muted)" }}>
+              {worst
+                ? worst.message
+                : `${h.reportCount} report${h.reportCount === 1 ? "" : "s"} on file, nothing flagged.`}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DigestFigure({
+  label,
+  value,
+  prefix = "",
+  suffix = "",
+}: {
+  label: string;
+  value: number | null | undefined;
+  prefix?: string;
+  suffix?: string;
+}) {
+  return (
+    <span>
+      <span className="tabular-nums" style={{ color: "var(--text-primary)", fontWeight: 600 }}>
+        {value == null ? "—" : `${prefix}${Math.round(value)}${suffix}`}
+      </span>{" "}
+      <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+        {label}
+      </span>
+    </span>
+  );
+}
+
 function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const defs: [Tab, string][] = [
+    ["home", "Home"],
     ["grid", "Rate grid"],
-    ["trends", "Trends"],
-    ["ladder", "Rate ladder"],
-    ["map", "Map & Conditions"],
     ["reports", "Manager reports"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
@@ -1136,90 +1341,6 @@ function ThemeToggle({
           </svg>
         </button>
       ))}
-    </div>
-  );
-}
-
-// Map panel: night stepper plus the real slippy map.
-function MapPanel({
-  rows,
-  hotels,
-  places,
-  fmt,
-  theme,
-  profileId,
-}: {
-  rows: GridRow[];
-  hotels: Hotel[];
-  places: MapPlace[];
-  fmt: (n: number) => string;
-  theme: "light" | "dark";
-  profileId: number | null;
-}) {
-  const [idx, setIdx] = useState(0);
-  const row = rows[Math.min(idx, rows.length - 1)] ?? null;
-  const located = hotels.filter((h) => h.latitude != null && h.longitude != null);
-  const total = located.length + places.filter((p) => !p.hotel_id).length;
-
-  return (
-    <div>
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          className="btn-ghost h-9 w-9 text-sm disabled:opacity-45"
-          onClick={() => setIdx(Math.max(0, idx - 1))}
-          disabled={idx === 0}
-          aria-label="Previous night"
-        >
-          ←
-        </button>
-        <select
-          value={idx}
-          onChange={(e) => setIdx(Number(e.target.value))}
-          className="btn-ghost px-2.5 py-1.5 text-[13px]"
-        >
-          {rows.map((r, i) => (
-            <option key={r.date} value={i}>
-              {dateLabel(r.date)}
-            </option>
-          ))}
-        </select>
-        <button
-          className="btn-ghost h-9 w-9 text-sm disabled:opacity-45"
-          onClick={() => setIdx(Math.min(rows.length - 1, idx + 1))}
-          disabled={idx >= rows.length - 1}
-          aria-label="Next night"
-        >
-          →
-        </button>
-        <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
-          {row?.median != null && <>median {fmt(row.median)} · </>}
-          {total} hotels on the map
-        </span>
-      </div>
-
-      <div className="mt-3">
-        <RateMap row={row} hotels={hotels} places={places} fmt={fmt} theme={theme} />
-      </div>
-
-      <div
-        className="mt-3 flex flex-wrap items-center gap-3 text-xs"
-        style={{ color: "var(--text-secondary)" }}
-      >
-        <span>Pin colour = price vs median:</span>
-        {[
-          ["var(--div-low)", "cheaper"],
-          ["var(--baseline)", "at market"],
-          ["var(--div-high)", "pricier"],
-        ].map(([c, label]) => (
-          <span key={label} className="inline-flex items-center gap-1.5">
-            <span className="inline-block h-3 w-3 rounded-full" style={{ background: c }} />
-            {label}
-          </span>
-        ))}
-        <span>· starred pins are your hotels · grey pins are nearby hotels without a tracked rate</span>
-      </div>
-
-      <HotelForecast profileId={profileId} />
     </div>
   );
 }
