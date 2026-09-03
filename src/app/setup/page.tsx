@@ -137,6 +137,11 @@ export default function SetupPage() {
   async function save() {
     if (!locationKey) return setError("Paste a TripAdvisor link first.");
     if (picked.length === 0) return setError("Add at least one hotel to track.");
+    // The dashboard builds every view around your own hotel, so without one it
+    // would open on an empty screen with nothing explaining why.
+    if (!picked.some((h) => h.isMine)) {
+      return setError("Tick which of these hotels is yours — the grid is built around it.");
+    }
     setSaving(true);
     setError(null);
     const res = await fetch("/api/setup", {
@@ -162,6 +167,8 @@ export default function SetupPage() {
     const j = await res.json();
     setSaving(false);
     if (!res.ok) return setError(j.error ?? "Save failed");
+    // Rates are already queued server-side; the dashboard shows the run's
+    // progress, so there is nothing to press when you land there.
     router.push("/app");
   }
 

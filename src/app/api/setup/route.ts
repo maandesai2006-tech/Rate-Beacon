@@ -1,17 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import type { Profile } from "@/lib/types";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
+import {
+  deleteProfile,
+  ownedProfile,
+  profilesForAccount,
+  saveProfile,
+  type SaveProfileInput,
+} from "@/lib/profiles";
+import { queueHydration, registerSchedulerTarget } from "@/lib/hydration";
+import { geocodeHotel } from "@/lib/geo";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-// GET ?profileId=N → that profile + its hotels (no id → first profile).
+// Creating and editing a profile. Every operation belongs to the signed-in
+// account: this endpoint used to take whatever profile id it was given and
+// write profiles with no owner at all, which is why a new customer's profile
+// was invisible to them the moment they finished onboarding.
+
+// GET ?profileId=N → that profile and its hotels. No id → this account's first
+// profile, or nulls for a brand-new account.
 export async function GET(req: NextRequest) {
-  const supa = db();
-  const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
 
-  let q = supa.from("profiles").select("*").order("id").limit(1);
-  if (profileId) q = supa.from("profiles").select("*").eq("id", profileId).limit(1);
-  const { data: profile } = await q.maybeSingle<Profile>();
+  const requested = Number(req.nextUrl.searchParams.get("profileId")) || null;
+  const profile = requested
+    ? await ownedProfile(supa, accountId, requested)
+    : ((await profilesForAccount(supa, accountId))[0] ?? null);
+
   if (!profile) return NextResponse.json({ profile: null, hotels: [] });
 
   const { data: links } = await supa
@@ -30,84 +49,96 @@ export async function GET(req: NextRequest) {
   });
 }
 
-interface SetupBody {
-  profileId?: number | null; // null/absent → create a new profile
-  name?: string;
-  hotelName: string;
-  cityCode: string;
-  cityName: string;
-  currency: string;
-  horizonDays: number;
-  adults: number;
-  notes?: string;
-  hotels: { hotelId: string; name: string; isMine: boolean }[];
-}
-
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as SetupBody;
-  if (!body.cityCode || !Array.isArray(body.hotels) || body.hotels.length === 0) {
-    return NextResponse.json(
-      { error: "Pick a location and at least one hotel to track" },
-      { status: 400 }
-    );
-  }
-  const supa = db();
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
 
-  const profileFields = {
-    name: body.name || body.hotelName || body.cityName || "New profile",
-    hotel_name: body.hotelName || null,
-    city_code: body.cityCode,
-    city_name: body.cityName || null,
-    currency: body.currency || "USD",
-    horizon_days: Math.min(120, Math.max(7, body.horizonDays || 45)),
-    adults: Math.min(9, Math.max(1, body.adults || 2)),
-    notes: body.notes ?? null,
-  };
+  const body = (await req.json().catch(() => null)) as SaveProfileInput | null;
+  if (!body) return NextResponse.json({ error: "Expected a profile" }, { status: 400 });
 
-  let profileId = body.profileId ?? null;
-  if (profileId) {
-    const { error } = await supa.from("profiles").update(profileFields).eq("id", profileId);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  } else {
-    const { data, error } = await supa
-      .from("profiles")
-      .insert(profileFields)
-      .select("id")
-      .single<{ id: number }>();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    profileId = data.id;
+  const result = await saveProfile(supa, accountId, body);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: result.status });
   }
 
-  // Global hotel registry (shared across profiles).
-  const { error: hErr } = await supa.from("hotels").upsert(
-    body.hotels.map((h) => ({ hotel_id: h.hotelId, name: h.name })),
-    { onConflict: "hotel_id" }
-  );
-  if (hErr) return NextResponse.json({ error: hErr.message }, { status: 500 });
+  // Everything a new profile needs before it is worth looking at, done here
+  // rather than left behind a button nobody knows to press: put the hotels on
+  // the map so the forecast and the radius search have somewhere to measure
+  // from, and put today's rates in the queue.
+  const firstRun = await prepare(supa, body);
 
-  // Replace this profile's tracked set.
-  const { error: dErr } = await supa
-    .from("profile_hotels")
-    .delete()
-    .eq("profile_id", profileId);
-  if (dErr) return NextResponse.json({ error: dErr.message }, { status: 500 });
-  const { error: lErr } = await supa.from("profile_hotels").insert(
-    body.hotels.map((h) => ({
-      profile_id: profileId,
-      hotel_id: h.hotelId,
-      is_mine: h.isMine,
-    }))
-  );
-  if (lErr) return NextResponse.json({ error: lErr.message }, { status: 500 });
-
-  return NextResponse.json({ ok: true, profileId });
+  return NextResponse.json({
+    ok: true,
+    profileId: result.profileId,
+    created: result.created,
+    firstRun,
+  });
 }
 
-// DELETE ?profileId=N → remove a profile (its links cascade).
+// DELETE ?profileId=N → remove one of this account's profiles.
 export async function DELETE(req: NextRequest) {
+  const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
+  if (!auth.ok) return auth.response;
+  const { accountId, supa } = auth;
+
   const profileId = Number(req.nextUrl.searchParams.get("profileId"));
   if (!profileId) return NextResponse.json({ error: "profileId required" }, { status: 400 });
-  const { error } = await db().from("profiles").delete().eq("id", profileId);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const result = await deleteProfile(supa, accountId, profileId);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ ok: true });
+}
+
+/**
+ * Get a freshly saved profile ready to be useful.
+ *
+ * Geocoding is bounded and best-effort — Nominatim asks for about a request a
+ * second, and a hotel that cannot be placed now is retried by the background
+ * pass. Queueing the collection is the part that matters: without it the first
+ * prices would not appear until the next nightly run.
+ */
+async function prepare(
+  supa: SupabaseClient,
+  body: SaveProfileInput
+): Promise<{ placed: number; queued: boolean }> {
+  let placed = 0;
+
+  const { data: unplaced } = await supa
+    .from("hotels")
+    .select("hotel_id, name")
+    .in(
+      "hotel_id",
+      body.hotels.map((h) => h.hotelId)
+    )
+    .is("latitude", null)
+    .limit(8)
+    .returns<{ hotel_id: string; name: string }[]>();
+
+  for (const hotel of unplaced ?? []) {
+    const geo = await geocodeHotel(hotel.name, body.cityName || null);
+    if (!geo) continue;
+    await supa
+      .from("hotels")
+      .update({
+        latitude: geo.latitude,
+        longitude: geo.longitude,
+        address: geo.address,
+        geo_updated_at: new Date().toISOString(),
+      })
+      .eq("hotel_id", hotel.hotel_id);
+    placed++;
+  }
+
+  let queued = false;
+  try {
+    await registerSchedulerTarget();
+    await queueHydration();
+    queued = true;
+  } catch {
+    // The nightly run still picks it up, and the dashboard says where
+    // collection has got to either way.
+  }
+
+  return { placed, queued };
 }

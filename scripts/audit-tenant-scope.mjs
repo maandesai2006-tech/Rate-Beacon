@@ -37,7 +37,6 @@ const TENANT_TABLES = [
 const CROSS_TENANT_ALLOWED = {
   "api/cron/snapshot/route.ts": "nightly rate collection runs for every profile",
   "api/cron/reports/route.ts": "nightly mailbox sync runs for every profile",
-  "api/cron/map/route.ts": "nightly map refresh runs for every profile",
   "api/auth/login/route.ts": "runs before an account is known",
   "api/auth/signup/route.ts": "creates the account",
   "api/auth/logout/route.ts": "clears a session by token",
@@ -46,7 +45,6 @@ const CROSS_TENANT_ALLOWED = {
   "api/geocode/route.ts": "places hotels in the shared directory",
   "api/demo/grid/route.ts": "public, and reads only shared market data",
   "api/system-check/route.ts": "diagnostics across the deployment",
-  "api/setup/route.ts": "creates the first profile for an account",
   "api/reports/inbound/route.ts": "authenticated by a per-profile inbox token, not a session",
 };
 
