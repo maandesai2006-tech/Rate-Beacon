@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node scripts/test-report-parser.mjs && node scripts/test-analysis-engine.mjs && node --experimental-strip-types scripts/test-xotelo-parse.mjs && node --experimental-strip-types scripts/test-tenant-config.mjs && node --experimental-strip-types scripts/test-profile-ownership.mjs && node --experimental-strip-types scripts/test-compset-matching.mjs && node --experimental-strip-types scripts/test-geocode-queries.mjs && node scripts/audit-tenant-scope.mjs"
+    "test": "node scripts/test-report-parser.mjs && node scripts/test-analysis-engine.mjs && node --experimental-strip-types scripts/test-xotelo-parse.mjs && node --experimental-strip-types scripts/test-tenant-config.mjs && node --experimental-strip-types scripts/test-profile-ownership.mjs && node --experimental-strip-types scripts/test-compset-matching.mjs && node --experimental-strip-types scripts/test-geocode-queries.mjs && node --experimental-strip-types scripts/test-key-resolution.mjs && node scripts/audit-tenant-scope.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.16.0",

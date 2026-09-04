@@ -94,9 +94,30 @@ function candidateCalls(locationKey: string, offset: number, limit: number): Can
     { name: "list:no-dates-sorted", path: "/list", params: { ...base, sort: "best_value" } },
     { name: "list:bare", path: "/list", params: { location_key: locationKey } },
     { name: "list:bare-limit", path: "/list", params: { location_key: locationKey, limit: String(limit) } },
+    // Every date format was called invalid, which may mean the window rather
+    // than the shape: tomorrow, and a week out, are what a listing usually
+    // wants.
+    { name: "list:tomorrow", path: "/list", params: { ...base, chk_in: day(1), chk_out: day(2) } },
+    { name: "list:week-out", path: "/list", params: { ...base, chk_in: day(7), chk_out: day(8) } },
+    // Or that a listing takes a nights count instead of a second date.
+    { name: "list:nights", path: "/list", params: { ...base, chk_in: inISO, nights: "1" } },
   ];
 
+  // The heatmap refuses the same location key /list accepts, which says it
+  // wants a different form of it — most likely the bare geo id.
+  const bare = locationKey.replace(/^g/i, "");
+
   const heatmap: Candidate[] = [
+    {
+      name: "heatmap:numeric-key",
+      path: "/heatmap",
+      params: { location_key: bare, chk_in: inISO, chk_out: outISO },
+    },
+    {
+      name: "heatmap:geo-id",
+      path: "/heatmap",
+      params: { geo_id: bare, chk_in: inISO, chk_out: outISO },
+    },
     {
       name: "heatmap:iso-dates",
       path: "/heatmap",

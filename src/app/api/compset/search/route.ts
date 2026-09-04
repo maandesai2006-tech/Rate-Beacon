@@ -62,7 +62,10 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const { anchor, error } = await anchorForProfile(supa, profile.id, shared);
+  const { anchor, error } = await anchorForProfile(supa, profile.id, {
+    shared,
+    baselineHotelId: q.get("baselineHotelId"),
+  });
   if (!anchor) return NextResponse.json({ error }, { status: 400 });
 
   // Fill the directory for this market if it is stale, then place anything

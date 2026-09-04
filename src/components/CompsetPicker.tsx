@@ -47,6 +47,10 @@ export default function CompsetPicker({
   const [linking, setLinking] = useState<string | null>(null);
   const [linkValue, setLinkValue] = useState("");
   const [baselineRate, setBaselineRate] = useState<number | null>(null);
+  // Where the market is measured from — shown, because a compset built around
+  // the wrong property is the failure this whole panel has to make visible.
+  const [anchorInfo, setAnchorInfo] = useState<{ address: string | null; town: string | null } | null>(null);
+  const [resolved, setResolved] = useState<{ name: string; hotelKey: string | null; detail: string }[]>([]);
   // The listing endpoint's answers, verbatim, so they can be read and passed on.
   const [diag, setDiag] = useState<{ summary: string; sources: { name: string; ok: boolean; detail: string }[]; outcomes: { shape: string; message: string }[] } | null>(null);
   const [diagBusy, setDiagBusy] = useState(false);
@@ -66,12 +70,14 @@ export default function CompsetPicker({
     setNote(null);
     try {
       const res = await fetch(
-        `/api/compset/suggest?profileId=${profileId}&radius=${radius}&count=15`
+        `/api/compset/suggest?profileId=${profileId}&radius=${radius}&count=15${baselineHotelId ? `&baselineHotelId=${encodeURIComponent(baselineHotelId)}` : ""}`
       );
       const j = await res.json();
       setSuggestions(j.suggestions ?? []);
       setNeedsLink(j.needsLink ?? []);
       setBaselineRate(j.baselineTypicalRate ?? null);
+      setAnchorInfo(j.anchor ? { address: j.anchor.address ?? null, town: j.anchor.town ?? null } : null);
+      setResolved(j.resolved ?? []);
       setChosen(new Set((j.suggestions ?? []).map((c: Candidate) => c.hotelKey)));
       setNote(j.error ?? j.note ?? null);
     } catch (e) {
@@ -97,7 +103,7 @@ export default function CompsetPicker({
       setSearching(true);
       try {
         const res = await fetch(
-          `/api/compset/search?profileId=${profileId}&radius=${radius}&q=${encodeURIComponent(q)}`
+          `/api/compset/search?profileId=${profileId}&radius=${radius}&q=${encodeURIComponent(q)}${baselineHotelId ? `&baselineHotelId=${encodeURIComponent(baselineHotelId)}` : ""}`
         );
         const j = await res.json();
         setResults(j.results ?? []);
@@ -186,7 +192,7 @@ export default function CompsetPicker({
             if (!profileId) return;
             setDiagBusy(true);
             try {
-              const res = await fetch(`/api/compset/diagnose?profileId=${profileId}`, { method: "POST" });
+              const res = await fetch(`/api/compset/diagnose?profileId=${profileId}${baselineHotelId ? `&baselineHotelId=${encodeURIComponent(baselineHotelId)}` : ""}`, { method: "POST" });
               setDiag(await res.json());
             } finally {
               setDiagBusy(false);
@@ -268,6 +274,29 @@ export default function CompsetPicker({
           </ul>
         )}
       </div>
+
+      {anchorInfo && (anchorInfo.address || anchorInfo.town) && (
+        <p className="mt-3 text-[12px]" style={{ color: "var(--text-secondary)" }}>
+          Measuring from <b>{baselineName ?? "your hotel"}</b>
+          {anchorInfo.address ? ` · ${anchorInfo.address}` : anchorInfo.town ? ` · ${anchorInfo.town}` : ""}
+        </p>
+      )}
+
+      {resolved.length > 0 && (
+        <details className="mt-3 text-[12px]" style={{ color: "var(--text-muted)" }}>
+          <summary className="cursor-pointer select-none">
+            Looked up {resolved.length} nearby hotel{resolved.length === 1 ? "" : "s"} ·{" "}
+            {resolved.filter((r) => r.hotelKey).length} matched to the rate feed
+          </summary>
+          <ul className="mt-1.5 grid gap-1 pl-4">
+            {resolved.map((r) => (
+              <li key={r.name}>
+                <b style={{ color: "var(--text-secondary)" }}>{r.name}</b> — {r.detail}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       {diag && (
         <div className="mt-4 rounded-lg p-4 text-[12px]" style={{ background: "var(--surface-2)" }}>

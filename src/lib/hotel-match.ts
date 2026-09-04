@@ -63,3 +63,45 @@ export function sameProperty(
   if (b.latitude == null || b.longitude == null) return true;
   return milesBetween(a, { latitude: b.latitude, longitude: b.longitude }) <= toleranceMiles;
 }
+
+/**
+ * The town out of a full address.
+ *
+ * Geocoders return "Holiday Inn Express, 4300 Legendary Drive, Destin, Okaloosa
+ * County, Florida, 32541, United States". The town and state are what identify
+ * a market to a person and to a search, and getting this wrong is how a Destin
+ * property ends up anchored in Pensacola.
+ */
+export function townOf(address: string | null): string | null {
+  if (!address) return null;
+  const parts = address.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+  const withoutCountry = parts.slice(0, -1);
+  const trimmed = withoutCountry.filter((p) => !/^\d{4,}(-\d+)?$/.test(p));
+  const state = trimmed[trimmed.length - 1] ?? null;
+  const town =
+    trimmed
+      .slice(0, -1)
+      .reverse()
+      .find((p) => !/county$/i.test(p)) ?? null;
+  return town && state ? `${town}, ${state}` : town;
+}
+
+/**
+ * Any TripAdvisor hotel ids in a block of text, in the order they appear.
+ *
+ * Used on what a grounded search returns. It must find an id in a real result
+ * and find nothing at all in prose — an invented id would put a hotel that
+ * does not exist into somebody's competitive set.
+ */
+export function keysInText(text: string): string[] {
+  const out: string[] = [];
+  // Lookaround on both sides: in a URL the id follows a hyphen
+  // ("Hotel_Review-g34467-d1234567-Reviews"), so a hyphen cannot be treated as
+  // part of a longer token — but a letter or digit either side means this is a
+  // fragment of something else and not an id at all.
+  for (const m of text.matchAll(/(?<![a-z0-9])(g\d+)-(d\d+)(?![a-z0-9])/gi)) {
+    out.push(`${m[1].toLowerCase()}-${m[2].toLowerCase()}`);
+  }
+  return [...new Set(out)];
+}

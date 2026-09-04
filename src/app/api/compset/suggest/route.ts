@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
+import { resolveHotelKeys, resolverConfigured } from "@/lib/resolve-key";
 import {
   anchorForProfile,
   refreshDirectory,
@@ -27,6 +28,9 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams;
   const profileId = Number(q.get("profileId")) || null;
   const count = Math.min(Math.max(Number(q.get("count")) || 15, 1), 30);
+  // Resolution costs a search per market, so it is opt-out for a deliberate
+  // "suggest" and off for background calls.
+  const resolve = q.get("resolve") !== "0";
   const radiusMiles = Math.min(
     Math.max(Number(q.get("radius")) || DEFAULT_RADIUS_MILES, 1),
     100
@@ -40,7 +44,10 @@ export async function GET(req: NextRequest) {
     .maybeSingle<{ id: number }>();
   if (!profile) return NextResponse.json({ error: "Unknown profile" }, { status: 400 });
 
-  const { anchor, error } = await anchorForProfile(supa, profile.id, shared);
+  const { anchor, error } = await anchorForProfile(supa, profile.id, {
+    shared,
+    baselineHotelId: q.get("baselineHotelId"),
+  });
   if (!anchor) return NextResponse.json({ error }, { status: 400 });
 
   const dir = await refreshDirectory(shared, anchor.locationKey);
@@ -80,7 +87,7 @@ export async function GET(req: NextRequest) {
   // Two lists, because they ask different things of the operator: one is a
   // set to accept, the other is a set of real neighbours that need a link
   // before anyone can follow them.
-  const suggestions = ranked
+  const suggestions: typeof ranked = ranked
     .filter((c) => c.priceable)
     .sort((a, b) => {
       const am = a.bandMatch === true ? 0 : a.bandMatch === null ? 1 : 2;
@@ -89,7 +96,36 @@ export async function GET(req: NextRequest) {
       return (a.distanceMiles ?? 99) - (b.distanceMiles ?? 99);
     })
     .slice(0, count);
-  const needsLink = ranked.filter((c) => !c.priceable).slice(0, 12);
+  let needsLink = ranked.filter((c) => !c.priceable).slice(0, 12);
+
+  // The neighbours the map found are real hotels with no TripAdvisor id. Look
+  // each one up and keep the ids the rate feed confirms, so the operator is
+  // offered a competitive set rather than a list of homework. Anything that
+  // cannot be resolved still falls through to the paste-a-link list.
+  const resolved: { name: string; hotelKey: string | null; detail: string }[] = [];
+  if (resolve && needsLink.length > 0 && resolverConfigured()) {
+    const found = await resolveHotelKeys(
+      needsLink.map((c) => ({ name: c.name, near: anchor.cityName })),
+      { market: anchor.cityName, limit: 10 }
+    );
+    resolved.push(...found);
+
+    const byName = new Map(found.map((f) => [f.name, f]));
+    const promoted = needsLink
+      .map((c) => {
+        const hit = byName.get(c.name);
+        if (!hit?.hotelKey) return null;
+        return { ...c, hotelKey: hit.hotelKey, priceable: true, source: "map" as const };
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null)
+      // Never offer one that is already tracked or already suggested.
+      .filter((c) => !suggestions.some((s) => s.hotelKey === c.hotelKey));
+
+    suggestions.push(...promoted);
+    suggestions.sort((a, b) => (a.distanceMiles ?? 99) - (b.distanceMiles ?? 99));
+    const promotedNames = new Set(promoted.map((p) => p.name));
+    needsLink = needsLink.filter((c) => !promotedNames.has(c.name));
+  }
   const fromListing = suggestions.filter((s) => s.source === "listing").length;
 
   return NextResponse.json({
@@ -100,6 +136,13 @@ export async function GET(req: NextRequest) {
     fromListing,
     fromKnown: suggestions.length - fromListing,
     baselineTypicalRate: mine,
+    anchor: {
+      hotelId: anchor.baselineHotelId ?? null,
+      address: anchor.address ?? null,
+      town: anchor.cityName,
+    },
+    resolved,
+    resolverConfigured: resolverConfigured(),
     suggestions,
     needsLink,
     note:

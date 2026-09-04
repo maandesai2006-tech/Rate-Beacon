@@ -45,7 +45,10 @@ export async function POST(req: NextRequest) {
       .eq("id", profileId)
       .maybeSingle<{ id: number }>();
     if (profile) {
-      const { anchor } = await anchorForProfile(supa, profile.id, shared);
+      const { anchor } = await anchorForProfile(supa, profile.id, {
+        shared,
+        baselineHotelId: req.nextUrl.searchParams.get("baselineHotelId"),
+      });
       if (anchor) anchorPoint = { latitude: anchor.latitude, longitude: anchor.longitude };
     }
   }

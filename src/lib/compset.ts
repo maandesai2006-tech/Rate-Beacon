@@ -14,11 +14,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { listHotelsIn, type ListedHotel } from "./xotelo-list";
-import { comparableName, milesBetween, sameProperty } from "./hotel-match";
+import { comparableName, milesBetween, sameProperty, townOf } from "./hotel-match";
 import { geocodeHotel } from "./geo";
 import { hotelsNear } from "./nearby";
 
-export { comparableName, sameProperty, milesBetween } from "./hotel-match";
+export { comparableName, sameProperty, milesBetween, townOf } from "./hotel-match";
 
 export const DEFAULT_RADIUS_MILES = 25;
 
@@ -58,6 +58,8 @@ export interface Anchor {
   cityName: string | null;
   /** The own hotel the anchor was measured from, when there is one. */
   baselineHotelId?: string | null;
+  /** That hotel's street address, when it has been placed. */
+  address?: string | null;
 }
 
 /**
@@ -67,16 +69,33 @@ export interface Anchor {
 export async function anchorForProfile(
   supa: SupabaseClient,
   profileId: number,
-  // For writing a freshly geocoded position back; the registry is shared.
-  shared: SupabaseClient = supa
+  {
+    // For writing a freshly geocoded position back; the registry is shared.
+    shared = supa,
+    // Which of the operator's hotels this is the market for. Without it the
+    // first one wins, which is how a Destin property came to be shown a
+    // competitive set of downtown Pensacola hotels: an account with two
+    // properties in two towns has two markets, and the anchor has to be the
+    // one being looked at.
+    baselineHotelId = null,
+  }: { shared?: SupabaseClient; baselineHotelId?: string | null } = {}
 ): Promise<{ anchor: Anchor | null; error?: string }> {
   const { data: mine } = await supa
     .from("profile_hotels")
-    .select("hotel_id, hotels(name, latitude, longitude)")
+    .select("hotel_id, hotels(name, latitude, longitude, address, city_code)")
     .eq("profile_id", profileId)
     .eq("is_mine", true)
     .returns<
-      { hotel_id: string; hotels: { name: string; latitude: number | null; longitude: number | null } | null }[]
+      {
+        hotel_id: string;
+        hotels: {
+          name: string;
+          latitude: number | null;
+          longitude: number | null;
+          address: string | null;
+          city_code: string | null;
+        } | null;
+      }[]
     >();
 
   const { data: profile } = await supa
@@ -90,31 +109,46 @@ export async function anchorForProfile(
       city_code: string | null;
     }>();
 
-  const placed = (mine ?? []).find(
-    (m) => m.hotels?.latitude != null && m.hotels?.longitude != null
-  );
+  const owned = mine ?? [];
+  // The named hotel, or the first one — but never the first when a name was
+  // given and matched.
+  const chosen =
+    (baselineHotelId ? owned.find((m) => m.hotel_id === baselineHotelId) : null) ??
+    owned.find((m) => m.hotels?.latitude != null && m.hotels?.longitude != null) ??
+    owned[0];
 
-  // The location key is the g-prefix of any tracked hotel; it is what the
-  // listing endpoint takes.
-  const locationKey =
-    (mine ?? [])[0]?.hotel_id?.split("-")[0] ?? profile?.city_code ?? "";
+  if (!chosen) {
+    return {
+      anchor: null,
+      error: "Add your own hotel first — the search radius is measured from it.",
+    };
+  }
 
-  if (placed?.hotels?.latitude != null && placed.hotels.longitude != null) {
+  // Everything is measured from the chosen hotel: its market, its town, its
+  // position. The profile's own city is a fallback for a hotel that carries
+  // none of its own, and nothing more.
+  const locationKey = chosen.hotel_id.split("-")[0] || profile?.city_code || "";
+  // The town from the hotel's own address beats the profile's, which names
+  // only one of a multi-market account's markets.
+  const townFromAddress = townOf(chosen.hotels?.address ?? null);
+  const cityName = townFromAddress ?? profile?.city_name ?? null;
+
+  if (chosen.hotels?.latitude != null && chosen.hotels.longitude != null) {
     return {
       anchor: {
-        latitude: placed.hotels.latitude,
-        longitude: placed.hotels.longitude,
+        latitude: chosen.hotels.latitude,
+        longitude: chosen.hotels.longitude,
         locationKey,
-        cityName: profile?.city_name ?? null,
-        baselineHotelId: placed.hotel_id,
+        cityName,
+        baselineHotelId: chosen.hotel_id,
+        address: chosen.hotels.address ?? null,
       },
     };
   }
 
-  // The hotel has no coordinates yet — place it now rather than failing.
-  const unplaced = (mine ?? [])[0];
-  if (unplaced?.hotels?.name) {
-    const geo = await geocodeHotel(unplaced.hotels.name, profile?.city_name ?? null);
+  // Not placed yet — place it now rather than failing, and remember it.
+  if (chosen.hotels?.name) {
+    const geo = await geocodeHotel(chosen.hotels.name, cityName);
     if (geo) {
       await shared
         .from("hotels")
@@ -122,36 +156,26 @@ export async function anchorForProfile(
           latitude: geo.latitude,
           longitude: geo.longitude,
           address: geo.address,
-        geo_precision: geo.precision,
+          geo_precision: geo.precision,
           geo_updated_at: new Date().toISOString(),
         })
-        .eq("hotel_id", unplaced.hotel_id);
+        .eq("hotel_id", chosen.hotel_id);
       return {
         anchor: {
           latitude: geo.latitude,
           longitude: geo.longitude,
           locationKey,
-          cityName: profile?.city_name ?? null,
-          baselineHotelId: unplaced.hotel_id,
+          cityName: townOf(geo.address) ?? cityName,
+          baselineHotelId: chosen.hotel_id,
+          address: geo.address,
         },
       };
     }
   }
 
-  if (profile?.latitude != null && profile.longitude != null) {
-    return {
-      anchor: {
-        latitude: profile.latitude,
-        longitude: profile.longitude,
-        locationKey,
-        cityName: profile.city_name,
-      },
-    };
-  }
-
   return {
     anchor: null,
-    error: "Add your own hotel first — the search radius is measured from it.",
+    error: `Could not find where ${chosen.hotels?.name ?? "your hotel"} is. Set its address on the profile and the competitive set can be built from it.`,
   };
 }
 

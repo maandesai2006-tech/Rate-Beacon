@@ -151,7 +151,10 @@ export async function POST(req: NextRequest) {
   // it, the radius search measures from it, and a competitor without one sits
   // outside both — so this is done here, bounded and best-effort, not left to
   // a background pass that may or may not run before anyone looks.
-  const { anchor: place } = await anchorForProfile(supa, profile.id, shared);
+  const { anchor: place } = await anchorForProfile(supa, profile.id, {
+    shared,
+    baselineHotelId: body.baselineHotelId ?? null,
+  });
   for (const h of accepted) {
     const d = known.get(h.hotelKey);
     if (d?.latitude != null && d?.longitude != null) continue;
@@ -192,7 +195,10 @@ export async function POST(req: NextRequest) {
 
   let edges = 0;
   if (baseline) {
-    const { anchor } = await anchorForProfile(supa, profile.id, shared);
+    const { anchor } = await anchorForProfile(supa, profile.id, {
+      shared,
+      baselineHotelId: baseline,
+    });
     const rows = accepted.map((h) => {
       const d = known.get(h.hotelKey);
       const distance =
