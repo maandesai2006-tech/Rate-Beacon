@@ -19,6 +19,7 @@ import type {
 export const dynamic = "force-dynamic";
 
 interface SnapshotRow {
+  is_anomaly?: boolean | null;
   hotel_id: string;
   check_in: string;
   captured_on: string;
@@ -28,6 +29,24 @@ interface SnapshotRow {
   offers: Quote[] | null;
   available: boolean;
   captured_at?: string;
+}
+
+function locationOf(hotelId: string): string {
+  return hotelId.split("-")[0];
+}
+
+function kmBetween(
+  a: { latitude: number | null; longitude: number | null },
+  b: { latitude: number | null; longitude: number | null }
+): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad((b.latitude as number) - (a.latitude as number));
+  const dLon = toRad((b.longitude as number) - (a.longitude as number));
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitude as number)) * Math.cos(toRad(b.latitude as number)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
 
 export async function GET(req: NextRequest) {
@@ -110,6 +129,7 @@ async function buildGrid(
     compsByBaseline.set(c.baseline_hotel_id, list);
   }
 
+  const byIdAll = new Map(allTracked.map((h) => [h.hotel_id, h]));
   const baselines: Baseline[] = allTracked
     .filter((h) => h.is_mine)
     .map((h) => ({
@@ -132,7 +152,25 @@ async function buildGrid(
   // presented as though they had: the median moved with hotels the operator
   // had never agreed compete with them. An empty set now stays empty and says
   // so, which is a question the picker can answer in one click.
-  const compIds = activeBaselineId ? (compsByBaseline.get(activeBaselineId) ?? []) : [];
+  // Market scope. A competitor must share the baseline's TripAdvisor location
+  // — the market id the data already carries — and, when both are placed, sit
+  // inside the profile's radius. Destin under Pensacola was moving the median
+  // with hotels forty-five miles away; a hotel that cannot be placed yet is
+  // kept, because absence of a coordinate is not evidence it is far.
+  const baselineHotel = activeBaselineId ? byIdAll.get(activeBaselineId) : undefined;
+  const radiusKm = (profile.compset_radius_miles ?? 15) * 1.609344;
+  const compIds = (activeBaselineId ? (compsByBaseline.get(activeBaselineId) ?? []) : []).filter((id) => {
+    const comp = byIdAll.get(id);
+    if (!comp || !baselineHotel) return false;
+    if (locationOf(id) !== locationOf(activeBaselineId as string)) return false;
+    if (
+      comp.latitude != null && comp.longitude != null &&
+      baselineHotel.latitude != null && baselineHotel.longitude != null
+    ) {
+      return kmBetween(baselineHotel, comp) <= radiusKm;
+    }
+    return true;
+  });
   const compIdSet = new Set(compIds);
   const compsAreDiscovered = compIds.length > 0;
 
@@ -281,13 +319,25 @@ async function buildGrid(
         offers: s?.offers ?? [],
         available: s ? s.available : true,
         capturedOn: s?.captured_on ?? null,
+        isAnomaly: Boolean(s?.is_anomaly),
       };
     }
 
-    const compPrices = comps
+    // A flagged price is shown, and marked, but it does not move the median:
+    // one scrape returning $327 for a $150 room must not become the market.
+    // Unless most of the market is flagged — a festival weekend lifts every
+    // hotel forty percent above its usual level, and that is not an error to
+    // exclude, it is the night. So flags are honoured only when they are the
+    // minority.
+    const pricedCells = comps
       .map((h) => cells[h.hotel_id])
-      .filter((c) => c.available && c.price != null)
-      .map((c) => c.price as number);
+      .filter((c) => c.available && c.price != null);
+    const flaggedCells = pricedCells.filter((c) => c.isAnomaly);
+    const anomalyMarketWide = pricedCells.length >= 2 && flaggedCells.length * 2 >= pricedCells.length;
+    const compPrices = (anomalyMarketWide ? pricedCells : pricedCells.filter((c) => !c.isAnomaly)).map(
+      (c) => c.price as number
+    );
+    const anomalyCount = flaggedCells.length;
     const soldOutCount = comps.filter((h) => {
       const c = cells[h.hotel_id];
       return c.capturedOn != null && !c.available;
@@ -373,6 +423,8 @@ async function buildGrid(
       min: compPrices.length ? Math.min(...compPrices) : null,
       max: compPrices.length ? Math.max(...compPrices) : null,
       compCount: compPrices.length,
+      anomalyCount,
+      anomalyMarketWide,
       soldOutCount,
       demand,
       momentumPct,

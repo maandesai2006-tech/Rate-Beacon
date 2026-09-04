@@ -1763,6 +1763,18 @@ function TrendChart({
           />
           market min–max
         </span>
+        {rows.some((r) => r.anomalyCount > 0) && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "var(--status-critical)" }} />
+            outlier excluded
+          </span>
+        )}
+        {rows.some((r) => r.anomalyMarketWide) && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "var(--status-warning)" }} />
+            market-wide spike
+          </span>
+        )}
       </div>
       <div className="relative mt-2 overflow-x-auto">
         <svg
@@ -1791,6 +1803,29 @@ function TrendChart({
           ))}
           <path d={linePath((r) => r.median)} fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeDasharray="5 4" />
           <path d={linePath((r) => r.myPrice)} fill="none" stroke="var(--accent)" strokeWidth="2.5" />
+          {/* Nights where a competitor's price was flagged and left out of the
+              median. The mark says "look here" — a scrape error or a real
+              event — without letting the spike redraw the market. */}
+          {rows.map((r, i) =>
+            r.anomalyCount > 0 && r.median != null ? (
+              <g key={`anom-${r.date}`}>
+                <circle
+                  cx={x(i)}
+                  cy={y(r.median)}
+                  r="5"
+                  fill={r.anomalyMarketWide ? "var(--status-warning)" : "var(--status-critical)"}
+                  stroke="var(--surface)"
+                  strokeWidth="2"
+                >
+                  <title>
+                    {r.anomalyMarketWide
+                      ? `${r.date}: most of the market is far above its usual level — a real event, nothing excluded`
+                      : `${r.date}: ${r.anomalyCount} competitor rate${r.anomalyCount === 1 ? "" : "s"} far above their usual level, excluded from the median`}
+                  </title>
+                </circle>
+              </g>
+            ) : null
+          )}
           {rows.map((r, i) =>
             i % xTickEvery === 0 ? (
               <text
@@ -1861,6 +1896,9 @@ function RateLadder({
     .sort((a, b) => (b.price ?? -1) - (a.price ?? -1));
   const maxPrice = Math.max(1, ...entries.map((e) => e.price ?? 0));
   const priced = entries.filter((e) => e.price != null);
+  // Hotels with nothing to show for this night — sold out, or not captured —
+  // are not competitors on the ladder; they are a fact worth one line.
+  const missing = entries.filter((e) => e.price == null && !e.hotel.is_mine);
   const myRank = priced.findIndex((e) => e.hotel.is_mine);
   const statById = new Map(rankStats.map((s) => [s.hotel_id, s]));
   const showsToday = idx === 0;
@@ -1915,7 +1953,7 @@ function RateLadder({
         <span className="th-label w-[124px] text-right">Move · 30-night avg</span>
       </div>
       <ul className="mt-2 space-y-1.5">
-        {entries.map(({ hotel, price, soldOut, direct }) => (
+        {priced.map(({ hotel, price, soldOut, direct }) => (
           <li key={hotel.hotel_id} className="flex items-center gap-3">
             <span className="w-[230px] truncate text-[13px]" title={hotel.name}>
               <a
@@ -1970,6 +2008,24 @@ function RateLadder({
           </li>
         ))}
       </ul>
+
+      {missing.length > 0 && (
+        <details className="mt-3 text-xs" style={{ color: "var(--text-muted)" }}>
+          <summary className="cursor-pointer select-none">
+            Missing data · {missing.length} propert{missing.length === 1 ? "y" : "ies"}
+          </summary>
+          <ul className="mt-1.5 grid gap-1 pl-4">
+            {missing.map(({ hotel, soldOut }) => (
+              <li key={hotel.hotel_id}>
+                {hotel.name}
+                <span className="ml-1.5" style={{ color: "var(--text-muted)" }}>
+                  · {soldOut ? "sold out for this night" : "no rate captured yet"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       <p className="mt-3 text-xs" style={{ color: "var(--text-muted)" }}>
         Bars show each hotel&apos;s nightly rate for this check-in date; &ldquo;D&rdquo; marks a brand-site (direct) rate.
       </p>

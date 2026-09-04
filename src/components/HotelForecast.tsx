@@ -68,20 +68,28 @@ export default function HotelForecast({ profileId }: { profileId: number | null 
   const [rows, setRows] = useState<HotelForecastRow[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A forecast that cannot be fetched is not a message the operator can act
+  // on; the section steps aside rather than showing a raw error.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!profileId) return;
     let cancelled = false;
     setBusy(true);
+    setFailed(false);
     fetch(`/api/conditions/forecast?profileId=${profileId}&range=${range}`)
-      .then((r) => r.json())
-      .then((j: { hotels?: HotelForecastRow[]; note?: string; error?: string }) => {
+      .then(async (r) => {
+        const j = (await r.json().catch(() => ({}))) as { hotels?: HotelForecastRow[]; note?: string; error?: string };
         if (cancelled) return;
+        if (!r.ok || j.error) {
+          setFailed(true);
+          return;
+        }
         setRows(j.hotels ?? []);
-        setNote(j.error ?? j.note ?? null);
+        setNote(j.note ?? null);
       })
-      .catch((e) => {
-        if (!cancelled) setNote((e as Error).message);
+      .catch(() => {
+        if (!cancelled) setFailed(true);
       })
       .finally(() => {
         if (!cancelled) setBusy(false);
@@ -93,6 +101,8 @@ export default function HotelForecast({ profileId }: { profileId: number | null 
 
   const heading =
     range === "7d" ? "Next 7 days" : range === "24h" ? "Next 24 hours" : "Next 12 hours";
+
+  if (failed) return null;
 
   return (
     <section className="mt-6" aria-label="Forecast at your hotels">

@@ -28,6 +28,7 @@ export default function SetupPage() {
   const [hotelName, setHotelName] = useState("");
   const [marketName, setMarketName] = useState("");
   const [currency, setCurrency] = useState("USD");
+  const [compsetRadius, setCompsetRadius] = useState(15);
   const [horizonDays, setHorizonDays] = useState(45);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -155,6 +156,7 @@ export default function SetupPage() {
         cityName: marketName,
         currency,
         horizonDays,
+        compsetRadiusMiles: compsetRadius,
         adults: 2,
         notes,
         hotels: picked.map((h) => ({
@@ -355,6 +357,21 @@ export default function SetupPage() {
             >
               {CURRENCIES.map((c) => (
                 <option key={c}>{c}</option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span style={{ color: "var(--text-secondary)" }}>Market radius</span>
+            <select
+              value={compsetRadius}
+              onChange={(e) => setCompsetRadius(Number(e.target.value))}
+              className="input mt-1"
+              title="Competitors farther than this from your hotel are left out of the market median"
+            >
+              {[5, 10, 15, 25, 50].map((m) => (
+                <option key={m} value={m}>
+                  {m} miles
+                </option>
               ))}
             </select>
           </label>

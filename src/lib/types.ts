@@ -6,6 +6,7 @@ export interface Profile {
   city_name: string | null;
   currency: string;
   horizon_days: number;
+  compset_radius_miles: number;
   adults: number;
   notes: string | null;
   latitude: number | null;
@@ -58,6 +59,8 @@ export interface RateCell {
   offers: Quote[];
   available: boolean;
   capturedOn: string | null;
+  /** Far above this hotel's own recent level — a scrape error or a real event. */
+  isAnomaly: boolean;
 }
 
 export type Position =
@@ -90,6 +93,10 @@ export interface GridRow {
   max: number | null;
   compCount: number;
   soldOutCount: number;
+  /** Competitors whose price for this night was flagged as far above their usual level. */
+  anomalyCount: number;
+  /** True when most of the market is flagged — a real event, so nothing was excluded. */
+  anomalyMarketWide: boolean;
   demand: number | null; // 0..100
   momentumPct: number | null; // % change of market median vs ~7 days ago
   position: Position;

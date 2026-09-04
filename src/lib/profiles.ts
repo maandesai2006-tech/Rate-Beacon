@@ -33,6 +33,8 @@ export interface SaveProfileInput {
   horizonDays: number;
   adults: number;
   notes?: string;
+  /** Miles from the baseline that count as its market. */
+  compsetRadiusMiles?: number;
   hotels: ProfileHotelInput[];
 }
 
@@ -79,6 +81,7 @@ function clean(input: SaveProfileInput) {
     horizon_days: Math.min(120, Math.max(7, input.horizonDays || 45)),
     adults: Math.min(9, Math.max(1, input.adults || 2)),
     notes: input.notes ?? null,
+    compset_radius_miles: Math.min(50, Math.max(3, Math.round(input.compsetRadiusMiles || 15))),
   };
 }
 

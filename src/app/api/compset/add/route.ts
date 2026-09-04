@@ -171,6 +171,7 @@ export async function POST(req: NextRequest) {
         latitude: geo.latitude,
         longitude: geo.longitude,
         address: geo.address,
+        geo_precision: geo.precision,
         geo_updated_at: new Date().toISOString(),
       })
       .eq("hotel_id", h.hotelKey);

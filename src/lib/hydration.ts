@@ -166,7 +166,13 @@ export async function tickHydration(
   // Enrichment (events, review scores) is only worth running once the day's
   // rates are in, so it rides on the tick that finishes the run.
   const errors = [...(existing?.errors ?? []), ...r.errors];
-  if (complete) errors.push(...(await runEnrichment(supa, plan.profiles)));
+  if (complete) {
+    errors.push(...(await runEnrichment(supa, plan.profiles)));
+    // With the day's prices in, judge them against each hotel's own recent
+    // level so a spike is marked before anyone reads the grid.
+    const { error: flagError } = await supa.rpc("flag_rate_anomalies", { for_day: runDate });
+    if (flagError) errors.push(`anomaly flagging: ${flagError.message}`);
+  }
 
   const now = new Date().toISOString();
   const row: RunRow = {
