@@ -56,6 +56,8 @@ export interface Anchor {
   longitude: number;
   locationKey: string;
   cityName: string | null;
+  /** The own hotel the anchor was measured from, when there is one. */
+  baselineHotelId?: string | null;
 }
 
 /**
@@ -104,6 +106,7 @@ export async function anchorForProfile(
         longitude: placed.hotels.longitude,
         locationKey,
         cityName: profile?.city_name ?? null,
+        baselineHotelId: placed.hotel_id,
       },
     };
   }
@@ -129,6 +132,7 @@ export async function anchorForProfile(
           longitude: geo.longitude,
           locationKey,
           cityName: profile?.city_name ?? null,
+          baselineHotelId: unplaced.hotel_id,
         },
       };
     }

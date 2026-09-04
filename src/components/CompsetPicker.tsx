@@ -20,6 +20,10 @@ interface Candidate {
   priceable?: boolean;
   /** For a hotel we cannot price: a search that lands on its TripAdvisor page. */
   lookupUrl?: string;
+  /** Median published rate over the next fortnight, when known. */
+  typicalRate?: number | null;
+  /** Within about a third of the baseline's typical rate. */
+  bandMatch?: boolean | null;
 }
 
 const RADII = [5, 10, 25, 50];
@@ -42,6 +46,10 @@ export default function CompsetPicker({
   const [needsLink, setNeedsLink] = useState<Candidate[]>([]);
   const [linking, setLinking] = useState<string | null>(null);
   const [linkValue, setLinkValue] = useState("");
+  const [baselineRate, setBaselineRate] = useState<number | null>(null);
+  // The listing endpoint's answers, verbatim, so they can be read and passed on.
+  const [diag, setDiag] = useState<{ summary: string; sources: { name: string; ok: boolean; detail: string }[]; outcomes: { shape: string; message: string }[] } | null>(null);
+  const [diagBusy, setDiagBusy] = useState(false);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,6 +71,7 @@ export default function CompsetPicker({
       const j = await res.json();
       setSuggestions(j.suggestions ?? []);
       setNeedsLink(j.needsLink ?? []);
+      setBaselineRate(j.baselineTypicalRate ?? null);
       setChosen(new Set((j.suggestions ?? []).map((c: Candidate) => c.hotelKey)));
       setNote(j.error ?? j.note ?? null);
     } catch (e) {
@@ -172,6 +181,23 @@ export default function CompsetPicker({
         >
           {busy ? "Looking…" : "Suggest competitors"}
         </button>
+        <button
+          onClick={async () => {
+            if (!profileId) return;
+            setDiagBusy(true);
+            try {
+              const res = await fetch(`/api/compset/diagnose?profileId=${profileId}`, { method: "POST" });
+              setDiag(await res.json());
+            } finally {
+              setDiagBusy(false);
+            }
+          }}
+          disabled={diagBusy}
+          className="btn-ghost px-3 py-1.5 text-[12px]"
+          title="Test every source competitors can come from and show what each answered"
+        >
+          {diagBusy ? "Testing…" : "Test sources"}
+        </button>
       </div>
 
       {/* Search */}
@@ -220,6 +246,8 @@ export default function CompsetPicker({
                       ? `${c.distanceMiles.toFixed(1)} mi away`
                       : "distance unknown"}
                     {c.rating != null ? ` · ${c.rating.toFixed(1)}★` : ""}
+                    {c.typicalRate != null ? ` · ~$${Math.round(c.typicalRate)}/night` : ""}
+                    {c.bandMatch === true ? " · same range" : c.bandMatch === false ? " · different range" : ""}
                   </span>
                 </span>
                 {c.alreadyTracked ? (
@@ -240,6 +268,30 @@ export default function CompsetPicker({
           </ul>
         )}
       </div>
+
+      {diag && (
+        <div className="mt-4 rounded-lg p-4 text-[12px]" style={{ background: "var(--surface-2)" }}>
+          <div style={{ color: "var(--text-primary)" }}>{diag.summary}</div>
+          <ul className="mt-2 grid gap-1">
+            {diag.sources.map((src) => (
+              <li key={src.name}>
+                <span style={{ color: src.ok ? "var(--status-good)" : "var(--status-critical)" }}>{src.ok ? "✓" : "✗"}</span>{" "}
+                <b>{src.name}</b> — {src.detail}
+              </li>
+            ))}
+          </ul>
+          {diag.outcomes.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
+                What the listing endpoint said to each request shape
+              </summary>
+              <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                {diag.outcomes.map((o) => `${o.shape}: ${o.message}`).join("\n")}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
 
       {/* Real neighbours the rate feed has no record of. Offered rather than
           hidden: the operator recognises these names, and one link each is a
@@ -329,6 +381,7 @@ export default function CompsetPicker({
               <div className="mb-2 flex flex-wrap items-center gap-2">
                 <span className="text-xs" style={{ color: "var(--text-secondary)" }}>
                   {suggestions.length} nearby, {selected.length} selected
+                  {baselineRate != null ? ` · yours is ~$${Math.round(baselineRate)}/night` : ""}
                 </span>
                 <button
                   onClick={() =>

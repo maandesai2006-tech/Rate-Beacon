@@ -296,9 +296,7 @@ export default function Dashboard() {
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "Could not queue a refresh");
       setHydration(j as Hydration);
-      setRefreshMsg(
-        "Collecting rates in the background. You can carry on — the grid fills in as they arrive."
-      );
+      setRefreshMsg(j.note ?? "Collecting rates in the background. The grid fills in as they arrive.");
       await load();
     } catch (e) {
       setRefreshMsg(`Could not queue a refresh: ${(e as Error).message}`);
@@ -538,7 +536,7 @@ export default function Dashboard() {
             }
           >
             {hydration?.status === "collecting"
-              ? `Collecting ${hydration.percent}%`
+              ? `Collecting ${hydration.cursor.toLocaleString()} / ${hydration.total.toLocaleString()}`
               : "Refresh rates"}
           </button>
         </div>

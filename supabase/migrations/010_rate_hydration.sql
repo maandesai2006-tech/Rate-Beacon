@@ -46,7 +46,7 @@ end $$;
 
 select cron.schedule(
   'rate-hydration',
-  '*/5 * * * *',
+  '* * * * *',
   $job$
     select net.http_get(
       url := (select value from api_settings where key = 'app.base_url') || '/api/cron/snapshot?tick=1',
