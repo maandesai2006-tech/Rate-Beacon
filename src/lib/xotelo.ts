@@ -322,3 +322,53 @@ export async function listHotels(
     }))
     .filter((h) => /^g\d+-d\d+$/.test(h.hotelKey) && h.name);
 }
+
+export type KeyVerdict = "priceable" | "unknown-key" | "unreachable";
+
+/**
+ * Does this hotel key actually resolve to something the rate feed can price?
+ *
+ * A competitive set full of hotels that silently never return a price is worse
+ * than a short one, so nothing is added without asking first. The distinction
+ * that matters is between "this key is not a hotel" and "this hotel has no
+ * rooms that night" — the second is a normal answer for a real property, and
+ * rejecting it would throw away sold-out hotels, which are exactly the ones
+ * worth watching.
+ */
+export async function verifyHotelKey(
+  hotelKey: string,
+  currency = "USD"
+): Promise<{ verdict: KeyVerdict; detail: string }> {
+  if (!/^g\d+-d\d+$/i.test(hotelKey)) {
+    return { verdict: "unknown-key", detail: "Not a TripAdvisor hotel id" };
+  }
+  const day = (n: number) => new Date(Date.now() + n * 86400e3).toISOString().slice(0, 10);
+
+  try {
+    // Far enough out that most properties are still open for sale, so a real
+    // hotel answers with rates rather than with an empty night.
+    const result = await xoteloGet<RatesResult>("/rates", {
+      hotel_key: hotelKey,
+      chk_in: day(21),
+      chk_out: day(22),
+      currency,
+      adults: "2",
+      rooms: "1",
+    });
+    const count = (result.rates ?? []).length;
+    return {
+      verdict: "priceable",
+      detail: count > 0 ? `${count} sellers quoting` : "known to the rate feed, no rooms that night",
+    };
+  } catch (e) {
+    if (e instanceof XoteloApiError) {
+      const message = e.message.toLowerCase();
+      // A real hotel with nothing for sale still belongs in a compset.
+      if (/availab|no rates|sold out|empty/.test(message)) {
+        return { verdict: "priceable", detail: "known to the rate feed, nothing for sale that night" };
+      }
+      return { verdict: "unknown-key", detail: e.message };
+    }
+    return { verdict: "unreachable", detail: (e as Error).message };
+  }
+}

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { anchorForProfile } from "@/lib/compset";
-import { milesBetween } from "@/lib/xotelo-list";
+import { milesBetween } from "@/lib/hotel-match";
+import { verifyHotelKey } from "@/lib/xotelo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,12 @@ export const maxDuration = 60;
 // Writes three things, because the grid reads all three: the hotel itself, the
 // profile's membership, and the baseline→competitor edge that makes it appear
 // in a specific hotel's grid rather than in every grid on the profile.
+//
+// Every hotel is checked against the rate feed before any of that happens. A
+// compset is a claim that these are the properties you are priced against, and
+// a member that silently never returns a price is worse than a shorter list —
+// it drags the median around by being absent. So a key that the feed does not
+// recognise is refused and said so, rather than accepted and quietly empty.
 
 interface Body {
   profileId?: number;
@@ -39,12 +46,34 @@ export async function POST(req: NextRequest) {
     .maybeSingle<{ id: number }>();
   if (!profile) return NextResponse.json({ error: "Unknown profile" }, { status: 400 });
 
+  // Nothing joins a compset it cannot be priced in. A hotel that is real but
+  // sold out for the probe night still counts — those are the ones worth
+  // watching — so only an unrecognised id is turned away.
+  const checked = await Promise.all(
+    wanted.map(async (h) => ({ ...h, ...(await verifyHotelKey(h.hotelKey)) }))
+  );
+  const accepted = checked.filter((h) => h.verdict === "priceable");
+  const rejected = checked.filter((h) => h.verdict !== "priceable");
+
+  if (accepted.length === 0) {
+    return NextResponse.json(
+      {
+        error:
+          rejected[0]?.verdict === "unreachable"
+            ? `The rate feed could not be reached, so nothing was added: ${rejected[0].detail}`
+            : "None of those hotels are known to the rate feed, so none were added.",
+        rejected: rejected.map((r) => ({ hotelKey: r.hotelKey, reason: r.detail })),
+      },
+      { status: 422 }
+    );
+  }
+
   // Names and coordinates from the directory where we have them, so a newly
-  // added competitor appears on the map immediately.
+  // added competitor carries its details immediately.
   const { data: dir } = await supa
     .from("hotel_directory")
     .select("hotel_id, name, latitude, longitude, rating, review_count")
-    .in("hotel_id", wanted.map((h) => h.hotelKey))
+    .in("hotel_id", accepted.map((h) => h.hotelKey))
     .returns<
       {
         hotel_id: string;
@@ -58,7 +87,7 @@ export async function POST(req: NextRequest) {
   const known = new Map((dir ?? []).map((d) => [d.hotel_id, d]));
 
   await supa.from("hotels").upsert(
-    wanted.map((h) => {
+    accepted.map((h) => {
       const d = known.get(h.hotelKey);
       return {
         hotel_id: h.hotelKey,
@@ -74,7 +103,7 @@ export async function POST(req: NextRequest) {
   );
 
   await supa.from("profile_hotels").upsert(
-    wanted.map((h) => ({
+    accepted.map((h) => ({
       profile_id: profile.id,
       hotel_id: h.hotelKey,
       is_mine: false,
@@ -99,7 +128,7 @@ export async function POST(req: NextRequest) {
   let edges = 0;
   if (baseline) {
     const { anchor } = await anchorForProfile(supa, profile.id);
-    const rows = wanted.map((h) => {
+    const rows = accepted.map((h) => {
       const d = known.get(h.hotelKey);
       const distance =
         anchor && d?.latitude != null && d?.longitude != null
@@ -119,5 +148,14 @@ export async function POST(req: NextRequest) {
     if (!error) edges = rows.length;
   }
 
-  return NextResponse.json({ added: wanted.length, baseline, edges });
+  return NextResponse.json({
+    added: accepted.length,
+    baseline,
+    edges,
+    rejected: rejected.map((r) => ({ hotelKey: r.hotelKey, reason: r.detail })),
+    note:
+      rejected.length > 0
+        ? `Added ${accepted.length}. ${rejected.length} could not be priced and were left out.`
+        : null,
+  });
 }

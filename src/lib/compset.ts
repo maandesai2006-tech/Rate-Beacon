@@ -13,8 +13,12 @@
 //   distance is a filter rather than a sort applied after the fact.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { listHotelsIn, milesBetween, type ListedHotel } from "./xotelo-list";
+import { listHotelsIn, type ListedHotel } from "./xotelo-list";
+import { comparableName, milesBetween, sameProperty } from "./hotel-match";
 import { geocodeHotel } from "./geo";
+import { hotelsNear } from "./nearby";
+
+export { comparableName, sameProperty, milesBetween } from "./hotel-match";
 
 export const DEFAULT_RADIUS_MILES = 25;
 
@@ -28,7 +32,14 @@ export interface Candidate {
   longitude: number | null;
   alreadyTracked: boolean;
   /** Where the candidate was found — shown so an empty result is explainable. */
-  source: "listing" | "known";
+  source: "listing" | "known" | "map";
+  /**
+   * Whether the rate feed can follow it. A candidate found on the map is a real
+   * hotel with no TripAdvisor id, so it cannot be priced until one is attached.
+   */
+  priceable: boolean;
+  /** Set for unpriceable candidates: a search that lands on its TripAdvisor page. */
+  lookupUrl?: string;
 }
 
 interface DirectoryRow {
@@ -299,6 +310,28 @@ function normalise(s: string): string {
  * a named match the operator recognises than to hide it because a geocoder
  * has not caught up.
  */
+/** A TripAdvisor search that lands on the hotel, for a candidate we cannot price. */
+function lookupUrlFor(name: string, near: string | null): string {
+  const q = [name, near].filter(Boolean).join(" ");
+  return `https://www.tripadvisor.com/Search?q=${encodeURIComponent(q)}`;
+}
+
+/**
+ * Everything near the anchor, from every source, in one list.
+ *
+ * Three sources, in order of how much we can do with what they return:
+ *
+ *   listing  the rate provider's own market listing — priceable, and empty
+ *            on this deployment because that endpoint has never answered.
+ *   known    every hotel any account already tracks — priceable, free, and
+ *            the reason a second customer in a covered market gets a compset
+ *            immediately.
+ *   map      OpenStreetMap — answers in every market, and carries no
+ *            TripAdvisor id, so its hotels are real but not yet followable.
+ *
+ * A map hotel that turns out to be one we can already price is folded into the
+ * priceable entry rather than offered twice.
+ */
 export async function searchNearby(
   supa: SupabaseClient,
   profileId: number,
@@ -307,9 +340,10 @@ export async function searchNearby(
     query = "",
     radiusMiles = DEFAULT_RADIUS_MILES,
     limit = 25,
-  }: { query?: string; radiusMiles?: number; limit?: number } = {}
+    includeMap = true,
+  }: { query?: string; radiusMiles?: number; limit?: number; includeMap?: boolean } = {}
 ): Promise<Candidate[]> {
-  const [{ data: listed }, known, { data: tracked }] = await Promise.all([
+  const [{ data: listed }, known, { data: tracked }, mapped] = await Promise.all([
     supa
       .from("hotel_directory")
       .select("hotel_id, name, latitude, longitude, rating, review_count")
@@ -322,10 +356,13 @@ export async function searchNearby(
       .select("hotel_id")
       .eq("profile_id", profileId)
       .returns<{ hotel_id: string }[]>(),
+    includeMap
+      ? hotelsNear(anchor.latitude, anchor.longitude, radiusMiles, 60).catch(() => [])
+      : Promise.resolve([]),
   ]);
 
-  // Union, listing first so its ratings win, and a row with coordinates beats
-  // one without whichever source it came from.
+  // Union the two priceable sources, listing first so its ratings win, and a
+  // row with coordinates beating one without whichever source it came from.
   const merged = new Map<string, { row: DirectoryRow; source: "listing" | "known" }>();
   for (const row of listed ?? []) merged.set(row.hotel_id, { row, source: "listing" });
   for (const row of known) {
@@ -343,23 +380,24 @@ export async function searchNearby(
   const trackedSet = new Set((tracked ?? []).map((t) => t.hotel_id));
   const q = normalise(query);
   const terms = q ? q.split(" ").filter(Boolean) : [];
+  const matchesQuery = (name: string) =>
+    terms.length === 0 || terms.every((t) => normalise(name).includes(t));
 
   const out: Candidate[] = [];
+  const priceableRows: { name: string; latitude: number | null; longitude: number | null }[] = [];
+
   for (const { row: r, source } of merged.values()) {
+    priceableRows.push({ name: r.name, latitude: r.latitude, longitude: r.longitude });
+
     const distance =
       r.latitude != null && r.longitude != null
         ? milesBetween(anchor, { latitude: r.latitude, longitude: r.longitude })
         : null;
 
     if (distance != null && distance > radiusMiles) continue;
-
-    if (terms.length > 0) {
-      const hay = normalise(r.name);
-      if (!terms.every((t) => hay.includes(t))) continue;
-    } else if (distance == null) {
-      // Browsing rather than searching: only show what we can actually place.
-      continue;
-    }
+    if (!matchesQuery(r.name)) continue;
+    // Browsing rather than searching: only show what we can actually place.
+    if (terms.length === 0 && distance == null) continue;
 
     out.push({
       hotelKey: r.hotel_id,
@@ -371,11 +409,34 @@ export async function searchNearby(
       longitude: r.longitude,
       alreadyTracked: trackedSet.has(r.hotel_id),
       source,
+      priceable: true,
     });
   }
 
-  // Nearest first; unplaced name matches last.
+  // Map hotels we cannot already price: real neighbours, offered with the one
+  // thing missing rather than hidden because a third party has no record.
+  for (const hotel of mapped) {
+    if (priceableRows.some((p) => sameProperty(hotel, p))) continue;
+    if (!matchesQuery(hotel.name)) continue;
+    out.push({
+      hotelKey: `osm:${hotel.osmId}`,
+      name: hotel.name,
+      distanceMiles: hotel.distanceMiles,
+      rating: null,
+      reviewCount: null,
+      latitude: hotel.latitude,
+      longitude: hotel.longitude,
+      alreadyTracked: false,
+      source: "map",
+      priceable: false,
+      lookupUrl: lookupUrlFor(hotel.name, anchor.cityName),
+    });
+  }
+
+  // Nearest first, and anything we can price ahead of anything we cannot at the
+  // same distance — the operator should reach for the ready ones first.
   out.sort((a, b) => {
+    if (a.priceable !== b.priceable) return a.priceable ? -1 : 1;
     if (a.distanceMiles == null) return 1;
     if (b.distanceMiles == null) return -1;
     return a.distanceMiles - b.distanceMiles;

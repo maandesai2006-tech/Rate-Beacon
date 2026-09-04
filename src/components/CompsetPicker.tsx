@@ -17,6 +17,9 @@ interface Candidate {
   rating: number | null;
   reviewCount: number | null;
   alreadyTracked: boolean;
+  priceable?: boolean;
+  /** For a hotel we cannot price: a search that lands on its TripAdvisor page. */
+  lookupUrl?: string;
 }
 
 const RADII = [5, 10, 25, 50];
@@ -34,6 +37,11 @@ export default function CompsetPicker({
 }) {
   const [radius, setRadius] = useState(25);
   const [suggestions, setSuggestions] = useState<Candidate[] | null>(null);
+  // Real hotels near you that the rate feed has no record of. They are shown
+  // separately because they ask for something: a link, once.
+  const [needsLink, setNeedsLink] = useState<Candidate[]>([]);
+  const [linking, setLinking] = useState<string | null>(null);
+  const [linkValue, setLinkValue] = useState("");
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -54,6 +62,7 @@ export default function CompsetPicker({
       );
       const j = await res.json();
       setSuggestions(j.suggestions ?? []);
+      setNeedsLink(j.needsLink ?? []);
       setChosen(new Set((j.suggestions ?? []).map((c: Candidate) => c.hotelKey)));
       setNote(j.error ?? j.note ?? null);
     } catch (e) {
@@ -112,10 +121,13 @@ export default function CompsetPicker({
         return;
       }
       setNote(
-        `Added ${j.added} hotel${j.added === 1 ? "" : "s"}${
-          baselineName ? ` to ${baselineName}'s competitive set` : ""
-        }. Rates start collecting on the next refresh.`
+        j.note
+          ? j.note
+          : `Added ${j.added} hotel${j.added === 1 ? "" : "s"}${
+              baselineName ? ` to ${baselineName}'s competitive set` : ""
+            }. Rates start collecting on the next run.`
       );
+      setNeedsLink((n) => n.filter((c) => !hotels.some((h) => h.hotelKey === c.hotelKey)));
       setSuggestions((s) => (s ?? []).filter((c) => !hotels.some((h) => h.hotelKey === c.hotelKey)));
       setResults((r) => r.map((c) => (hotels.some((h) => h.hotelKey === c.hotelKey) ? { ...c, alreadyTracked: true } : c)));
       setQuery("");
@@ -228,6 +240,82 @@ export default function CompsetPicker({
           </ul>
         )}
       </div>
+
+      {/* Real neighbours the rate feed has no record of. Offered rather than
+          hidden: the operator recognises these names, and one link each is a
+          far smaller job than thinking up a compset from nothing. */}
+      {needsLink.length > 0 && (
+        <div className="mt-5 rounded-lg p-4" style={{ background: "var(--surface-2)" }}>
+          <div className="text-[13px]" style={{ color: "var(--text-primary)" }}>
+            {needsLink.length} more hotels near you, not yet in the rate feed
+          </div>
+          <p className="mt-1 text-[12px]" style={{ color: "var(--text-secondary)" }}>
+            These are real properties within {radius} miles. Paste a TripAdvisor
+            link for any you compete with and they are checked and added.
+          </p>
+          <ul className="mt-3 grid gap-1.5">
+            {needsLink.map((c) => (
+              <li key={c.hotelKey} className="text-[13px]">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span style={{ color: "var(--text-primary)" }}>{c.name}</span>
+                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                    {c.distanceMiles != null ? `${c.distanceMiles.toFixed(1)} mi` : ""}
+                  </span>
+                  {c.lookupUrl && (
+                    <a
+                      href={c.lookupUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[12px] underline"
+                      style={{ color: "var(--accent)" }}
+                    >
+                      Find on TripAdvisor
+                    </a>
+                  )}
+                  <button
+                    onClick={() => {
+                      setLinking(linking === c.hotelKey ? null : c.hotelKey);
+                      setLinkValue("");
+                    }}
+                    className="text-[12px] underline"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    {linking === c.hotelKey ? "Cancel" : "Paste link"}
+                  </button>
+                </div>
+                {linking === c.hotelKey && (
+                  <div className="mt-1.5 flex gap-2">
+                    <input
+                      value={linkValue}
+                      onChange={(e) => setLinkValue(e.target.value)}
+                      placeholder={`TripAdvisor link for ${c.name}`}
+                      className="input flex-1 px-2 py-1 text-[12px]"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => {
+                        const key = linkValue.match(/(g\d+-d\d+)/i)?.[1];
+                        if (!key) {
+                          setNote(
+                            "That link has no TripAdvisor hotel id in it. Open the hotel's page and copy the URL from the address bar."
+                          );
+                          return;
+                        }
+                        setLinking(null);
+                        add([{ hotelKey: key.toLowerCase(), name: c.name }]);
+                      }}
+                      disabled={saving}
+                      className="btn-accent px-3 py-1 text-[12px]"
+                    >
+                      Add
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Suggestions */}
       {suggestions != null && (

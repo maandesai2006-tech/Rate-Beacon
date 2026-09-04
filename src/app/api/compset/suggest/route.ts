@@ -51,7 +51,12 @@ export async function GET(req: NextRequest) {
     limit: count + 10,
   });
   // Your own hotels are not competitors.
-  const suggestions = all.filter((c) => !c.alreadyTracked).slice(0, count);
+  const untracked = all.filter((c) => !c.alreadyTracked);
+  // Two lists, because they ask different things of the operator: one is a
+  // set to accept, the other is a set of real neighbours that need a link
+  // before anyone can follow them.
+  const suggestions = untracked.filter((c) => c.priceable).slice(0, count);
+  const needsLink = untracked.filter((c) => !c.priceable).slice(0, 12);
   const fromListing = suggestions.filter((s) => s.source === "listing").length;
 
   return NextResponse.json({
@@ -62,11 +67,12 @@ export async function GET(req: NextRequest) {
     fromListing,
     fromKnown: suggestions.length - fromListing,
     suggestions,
+    needsLink,
     note:
-      suggestions.length > 0 && dir.error
-        ? `The market listing could not be read (${dir.error}), so these are the hotels already known near you. Paste a TripAdvisor link to add anything missing.`
-        : suggestions.length === 0 && dir.error
-          ? `Nothing to suggest yet: the market listing could not be read, and no hotels are known within ${radiusMiles} miles. ${dir.error} Paste a TripAdvisor link to add competitors directly.`
+      suggestions.length === 0 && needsLink.length > 0
+        ? `Nothing in this market can be priced yet, but ${needsLink.length} real hotels sit within ${radiusMiles} miles. Attach a TripAdvisor link to the ones you compete with and they start collecting tomorrow.`
+        : suggestions.length > 0 && dir.error
+          ? `The market listing could not be read (${dir.error}), so these are the hotels already known near you.`
           : suggestions.length === 0
             ? `No hotels found within ${radiusMiles} miles. Try a wider radius.`
             : null,
