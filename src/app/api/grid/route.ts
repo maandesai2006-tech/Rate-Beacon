@@ -123,24 +123,18 @@ async function buildGrid(
       ? baselineIdParam
       : baselines[0]?.hotel_id) ?? null;
 
-  // The grid shows the active baseline plus its own discovered competitor
-  // set. Before discovery has run there are no edges; fall back to tracked
-  // hotels in the SAME TripAdvisor location only — never the whole profile,
-  // which would mix unrelated markets (e.g. Destin under a Pensacola hotel).
-  const baselineLocation = activeBaselineId ? activeBaselineId.split("-")[0] : null;
-  const compIds =
-    activeBaselineId && (compsByBaseline.get(activeBaselineId)?.length ?? 0) > 0
-      ? (compsByBaseline.get(activeBaselineId) as string[])
-      : allTracked
-          .filter(
-            (h) =>
-              h.hotel_id !== activeBaselineId &&
-              !h.is_mine &&
-              h.hotel_id.split("-")[0] === baselineLocation
-          )
-          .map((h) => h.hotel_id);
+  // The grid shows the active baseline and its own competitive set — the
+  // edges recorded against it, and nothing else.
+  //
+  // This used to fall back to "every tracked hotel sharing a TripAdvisor
+  // location code" whenever no edges existed, which was always, because
+  // discovery never produced any. The effect was a compset nobody chose,
+  // presented as though they had: the median moved with hotels the operator
+  // had never agreed compete with them. An empty set now stays empty and says
+  // so, which is a question the picker can answer in one click.
+  const compIds = activeBaselineId ? (compsByBaseline.get(activeBaselineId) ?? []) : [];
   const compIdSet = new Set(compIds);
-  const compsAreDiscovered = (compsByBaseline.get(activeBaselineId ?? "")?.length ?? 0) > 0;
+  const compsAreDiscovered = compIds.length > 0;
 
   const byId = new Map(allTracked.map((h) => [h.hotel_id, h]));
   // Which of the columns are hotels this operator also owns. is_mine stays

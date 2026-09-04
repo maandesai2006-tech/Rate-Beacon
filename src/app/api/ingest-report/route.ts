@@ -276,27 +276,6 @@ async function ingestOne(args: {
 
   const date = reportDate ?? todayISO();
 
-  // ── Raw ledger, then the normalised row ────────────────────────────────
-  const { data: rawRow } = await supa
-    .from("manager_reports")
-    .upsert(
-      {
-        profile_id: profileId,
-        hotel_id: match.hotelId,
-        report_date: date,
-        period: "day",
-        source: "email",
-        file_name: file.filename ?? null,
-        subject: subject || null,
-        raw_text: text.slice(0, 60_000),
-        matched_by: match.matchedBy,
-        message_id: payload.messageId || null,
-      },
-      { onConflict: "profile_id,hotel_id,report_date,period" }
-    )
-    .select("id")
-    .single<{ id: number }>();
-
   if (pmsType) {
     await supa.from("hotels").update({ pms_type: pmsType }).eq("hotel_id", match.hotelId);
   }
@@ -310,8 +289,12 @@ async function ingestOne(args: {
     extractor,
     extractorModel,
     confidence,
-    rawReportId: rawRow?.id ?? null,
     currency,
+    rawText: text,
+    messageId: payload.messageId || null,
+    fileName: file.filename ?? null,
+    subject: subject || null,
+    matchedBy: match.matchedBy,
   });
 
   return {

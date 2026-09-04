@@ -1,21 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { db } from "./db";
 import { getRates } from "./xotelo";
 import { addDaysISO, dateRange, todayISO } from "./dates";
 import { refreshEvents, refreshGeo, refreshRatings } from "./enrich";
 import type { Profile } from "./types";
-
-export interface SnapshotResult {
-  profiles: number;
-  hotels: number;
-  dates: number;
-  rowsWritten: number;
-  errors: string[];
-  /** Jobs in the whole run, so a caller can show progress. */
-  total: number;
-  /** Where the next chunk should start; null when the run is complete. */
-  nextOffset: number | null;
-}
 
 /** One hotel-night to price. */
 export interface RateJob {
@@ -57,8 +44,8 @@ export async function buildJobs(
       supa.from("profiles").select("*").returns<Profile[]>(),
       supa
         .from("profile_hotels")
-        .select("profile_id, hotel_id, role")
-        .returns<{ profile_id: number; hotel_id: string; role: string }[]>(),
+        .select("profile_id, hotel_id")
+        .returns<{ profile_id: number; hotel_id: string }[]>(),
       supa
         .from("hotels")
         .select("hotel_id, name")
@@ -70,13 +57,9 @@ export async function buildJobs(
   }
 
   const nameById = new Map(hotelRows?.map((h) => [h.hotel_id, h.name]) ?? []);
-  // "map" links existed to put prices on map pins. Nothing draws them now, so
-  // pricing them would be a few hundred upstream calls a day for data no
-  // screen reads.
-  const priceable = links.filter((l) => l.role !== "map");
   const profileById = new Map(profiles.map((p) => [p.id, p]));
   const tracked = new Map<string, TrackedHotel>();
-  for (const link of priceable) {
+  for (const link of links) {
     const p = profileById.get(link.profile_id);
     if (!p) continue;
     const horizon = p.horizon_days;
@@ -187,41 +170,4 @@ export async function runEnrichment(supa: SupabaseClient, profiles: Profile[]): 
   errors.push(...(await refreshEvents(supa, profiles)));
   errors.push(...(await refreshRatings(supa, profiles)));
   return errors;
-}
-
-/**
- * The original offset/limit interface, kept for callers that drive their own
- * chunking. New work should use the resumable run in lib/hydration.ts.
- */
-export async function runSnapshot(
-  maxDates?: number,
-  chunk?: { offset: number; limit: number }
-): Promise<SnapshotResult> {
-  const supa = db();
-  const plan = await buildJobs(supa, maxDates);
-  if (plan.note) {
-    return {
-      profiles: 0, hotels: 0, dates: 0, rowsWritten: 0,
-      errors: [plan.note], total: 0, nextOffset: null,
-    };
-  }
-
-  const offset = chunk?.offset ?? 0;
-  const limit = chunk?.limit ?? plan.jobs.length;
-  const slice = plan.jobs.slice(offset, offset + limit);
-  const isLastChunk = offset + limit >= plan.jobs.length;
-
-  const r = await processJobs(supa, slice, { budgetMs: 45_000 });
-  const errors = [...r.errors];
-  if (isLastChunk) errors.push(...(await runEnrichment(supa, plan.profiles)));
-
-  return {
-    profiles: plan.profiles.length,
-    hotels: plan.hotels,
-    dates: plan.dates,
-    rowsWritten: r.rowsWritten,
-    errors: errors.slice(0, 10),
-    total: plan.jobs.length,
-    nextOffset: isLastChunk ? null : offset + limit,
-  };
 }

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listHotels, parseTripAdvisorRef } from "@/lib/xotelo";
+import { parseTripAdvisorRef } from "@/lib/xotelo";
+import { listHotelsIn } from "@/lib/xotelo-list";
+import { db } from "@/lib/db";
 
 // Two modes:
 //   ?ref=<TripAdvisor URL or key>  → parse it; if it names a hotel, echo it
@@ -38,13 +40,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "ref or locationKey required" }, { status: 400 });
   }
 
-  let hotels: { hotelKey: string; name: string }[] = [];
-  let listError: string | null = null;
-  try {
-    hotels = await listHotels(locationKey, offset, 30);
-  } catch (e) {
-    listError = (e as Error).message;
-  }
+  const listed = await listHotelsIn(db(), locationKey, { offset, limit: 30 });
+  const hotels: { hotelKey: string; name: string }[] = listed.hotels;
+  const listError = listed.error;
 
   if (pastedHotel) {
     // Prefer the listing's cleaner name when we can find it there.

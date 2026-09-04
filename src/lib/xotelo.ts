@@ -266,62 +266,6 @@ interface ListResult {
 // Hotels in a TripAdvisor location, for the competitor picker and for
 // refreshing review standing (rating fields are parsed defensively — the
 // exact shape varies).
-export async function listHotels(
-  locationKey: string,
-  offset = 0,
-  limit = 30
-): Promise<XoteloHotel[]> {
-  // The listing endpoint is picky about parameters and the accepted shape has
-  // changed over time, so try the known variants and use the first that
-  // answers. The winning shape is remembered for the rest of the process.
-  const inD = new Date(Date.now() + 14 * 86400e3).toISOString().slice(0, 10);
-  const outD = new Date(Date.now() + 15 * 86400e3).toISOString().slice(0, 10);
-  const variants: Record<string, string>[] = [
-    { location_key: locationKey, offset: String(offset), limit: String(limit) },
-    { location_key: locationKey, offset: String(offset), limit: String(limit), sort: "best_value" },
-    {
-      location_key: locationKey,
-      chk_in: inD,
-      chk_out: outD,
-      offset: String(offset),
-      limit: String(limit),
-      currency: "USD",
-      adults: "2",
-      rooms: "1",
-    },
-    { location_key: locationKey, chk_in: inD, chk_out: outD, offset: String(offset), limit: String(limit) },
-    { location_key: locationKey },
-  ];
-
-  const ordered = listVariantIndex >= 0
-    ? [variants[listVariantIndex], ...variants.filter((_, i) => i !== listVariantIndex)]
-    : variants;
-
-  let lastErr: Error | null = null;
-  let result: ListResult | null = null;
-  for (let i = 0; i < ordered.length; i++) {
-    try {
-      const r = await xoteloGet<ListResult>("/list", ordered[i]);
-      if ((r.list ?? []).length > 0 || r.total_count != null) {
-        listVariantIndex = variants.indexOf(ordered[i]);
-        result = r;
-        break;
-      }
-    } catch (e) {
-      lastErr = e as Error;
-    }
-  }
-  if (!result) throw lastErr ?? new Error("Hotel listing returned no usable shape");
-
-  return (result.list ?? [])
-    .map((h) => ({
-      hotelKey: (h.key ?? h.hotel_key ?? "").toLowerCase(),
-      name: h.name ?? h.title ?? "",
-      rating: h.rating ?? h.review_summary?.rating ?? null,
-      reviewCount: h.review_count ?? h.reviews ?? h.review_summary?.count ?? null,
-    }))
-    .filter((h) => /^g\d+-d\d+$/.test(h.hotelKey) && h.name);
-}
 
 export type KeyVerdict = "priceable" | "unknown-key" | "unreachable";
 

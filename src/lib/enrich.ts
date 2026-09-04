@@ -5,7 +5,7 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { getTicketmasterEvents } from "./signals";
 import { geocodeHotel } from "./geo";
-import { listHotels } from "./xotelo";
+import { listHotelsIn } from "./xotelo-list";
 import { addDaysISO, todayISO } from "./dates";
 import type { Profile } from "./types";
 
@@ -127,7 +127,7 @@ export async function refreshRatings(
   for (const loc of locations) {
     try {
       for (let page = 0; page < 3; page++) {
-        const hotels = await listHotels(loc, page * 30, 30);
+        const { hotels } = await listHotelsIn(supa, loc, { offset: page * 30, limit: 30 });
         if (hotels.length === 0) break;
         for (const h of hotels) {
           if (!stale.has(h.hotelKey) || h.rating == null) continue;

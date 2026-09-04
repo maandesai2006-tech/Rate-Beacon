@@ -82,7 +82,7 @@ export async function syncMailbox(
           filed++;
           if (r.messageId) {
             await supa
-              .from("manager_reports")
+              .from("daily_manager_reports")
               .update({ message_id: r.messageId })
               .eq("id", result.reportId);
           }

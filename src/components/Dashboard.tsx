@@ -124,7 +124,6 @@ export default function Dashboard() {
     }
   }, []);
   const [refreshing, setRefreshing] = useState(false);
-  const [discovering, setDiscovering] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [checks, setChecks] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -308,34 +307,6 @@ export default function Dashboard() {
     }
   }
 
-
-  // Rebuild this baseline's competitor set from data: TripAdvisor listing →
-  // geocode → nearest by distance.
-  async function discover() {
-    if (!profileId) return;
-    setDiscovering(true);
-    setRefreshMsg(null);
-    try {
-      const qs = new URLSearchParams({ profileId: String(profileId) });
-      if (baselineId) qs.set("baselineId", baselineId);
-      const res = await fetch(`/api/discover?${qs}`, { method: "POST" });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error ?? "Discovery failed");
-      const r = j.results?.[0];
-      setRefreshMsg(
-        r
-          ? `Found ${r.comps} competitors by distance. Their rates collect on the next background run.`
-          : "Discovery finished."
-      );
-      await load();
-    } catch (e) {
-      setRefreshMsg(`Discovery failed: ${(e as Error).message}`);
-    } finally {
-      setDiscovering(false);
-    }
-  }
-
-  // Rebuild the map's nearby-hotel set from OpenStreetMap for this profile.
 
   async function runSystemCheck() {
     setChecking(true);
@@ -554,9 +525,9 @@ export default function Dashboard() {
 
       {!compsAreDiscovered && (
         <div className="card mt-4 p-4 text-[13px]">
-          <div className="kicker mb-1">Competitor set not discovered yet</div>
-          This hotel is showing other tracked hotels in the same TripAdvisor
-          location as a stand-in.{" "}
+          <div className="kicker mb-1">No competitive set yet</div>
+          Nothing is being compared against this hotel, so the grid has no
+          market to place it in.{" "}
           <button
             type="button"
             onClick={() => setPickerOpen(true)}
@@ -565,7 +536,7 @@ export default function Dashboard() {
           >
             Find competitors
           </button>{" "}
-          to build its own set by distance.
+          to see the hotels around it and pick the ones you compete with.
         </div>
       )}
 

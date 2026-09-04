@@ -116,74 +116,40 @@ export async function ingestReport(
     };
   }
 
-  const { data: report, error } = await supa
-    .from("manager_reports")
-    .upsert(
-      {
-        profile_id: input.profileId,
-        hotel_id: match.hotelId,
-        report_date: reportDate,
-        period: "day",
-        source: input.source,
-        file_name: input.fileName ?? null,
-        subject: input.subject ?? null,
-        raw_text: input.text.slice(0, 60_000),
-        matched_by: match.matchedBy,
-      },
-      { onConflict: "profile_id,hotel_id,report_date,period" }
-    )
-    .select("id")
-    .single<{ id: number }>();
-
-  if (error || !report) {
+  // One row per hotel-night, carrying both the numbers and the text they were
+  // read from. A report collected over IMAP or by upload lands exactly as one
+  // that came through the Cloudflare Worker.
+  const found = Object.keys(wide).length;
+  let reportId: number | null = null;
+  try {
+    const stored = await storeDailyReport(supa, {
+      profileId: input.profileId,
+      hotelId: match.hotelId,
+      reportDate,
+      metrics: wide,
+      source: input.source,
+      extractor,
+      extractorModel,
+      confidence,
+      rawText: input.text,
+      fileName: input.fileName ?? null,
+      subject: input.subject ?? null,
+      matchedBy: match.matchedBy,
+    });
+    reportId = stored.reportId;
+  } catch (e) {
     return {
       reportId: null,
       hotelId: match.hotelId,
       matchedBy: match.matchedBy,
       reportDate,
-      metrics: 0,
-      error: error?.message ?? "Could not save the report",
+      metrics: found,
+      error: (e as Error).message,
     };
   }
 
-  // The narrow store stays the raw record of what the text parser saw.
-  if (metrics.length) {
-    await supa.from("report_metrics").upsert(
-      metrics.map((m) => ({
-        report_id: report.id,
-        metric: m.metric,
-        value: m.value,
-        unit: m.unit,
-      })),
-      { onConflict: "report_id,metric" }
-    );
-  }
-
-  // The normalised layer is what the dashboard and the fifteen rules read, so
-  // a report collected over IMAP or by upload lands exactly as one that came
-  // through the Cloudflare Worker.
-  const found = Object.keys(wide).length;
-  if (found) {
-    try {
-      await storeDailyReport(supa, {
-        profileId: input.profileId,
-        hotelId: match.hotelId,
-        reportDate,
-        metrics: wide,
-        source: input.source,
-        extractor,
-        extractorModel,
-        confidence,
-        rawReportId: report.id,
-      });
-    } catch {
-      // The raw report is already saved; a failure to normalise should not
-      // lose it, and re-ingesting the same report replays this step.
-    }
-  }
-
   return {
-    reportId: report.id,
+    reportId,
     hotelId: match.hotelId,
     matchedBy: match.matchedBy,
     reportDate,

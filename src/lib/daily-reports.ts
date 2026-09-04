@@ -48,8 +48,13 @@ export interface StoreInput {
   extractorModel?: string | null;
   confidence?: number | null;
   rawPdfUrl?: string | null;
-  rawReportId?: number | null;
   currency?: string;
+  /** The record of what arrived, kept on the row it produced. */
+  rawText?: string | null;
+  messageId?: string | null;
+  fileName?: string | null;
+  subject?: string | null;
+  matchedBy?: string | null;
 }
 
 export interface StoreResult {
@@ -78,7 +83,13 @@ export async function storeDailyReport(
     extractor_model: input.extractorModel ?? null,
     confidence: input.confidence ?? null,
     raw_pdf_url: input.rawPdfUrl ?? null,
-    raw_report_id: input.rawReportId ?? null,
+    // The report used to be written to a second table purely to keep these,
+    // and nothing read that table. They live on the row they describe.
+    raw_text: input.rawText ? input.rawText.slice(0, 60_000) : null,
+    message_id: input.messageId ?? null,
+    file_name: input.fileName ?? null,
+    subject: input.subject ?? null,
+    matched_by: input.matchedBy ?? null,
   };
   for (const col of DAILY_METRIC_COLUMNS) {
     const v = derived[col];
