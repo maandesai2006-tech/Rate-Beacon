@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { syncMailbox } from "@/lib/mail-sync";
+import { reportError } from "@/lib/errors";
 
 export const maxDuration = 60;
 
@@ -19,7 +20,16 @@ export async function GET(req: NextRequest) {
   const budgetEach = list.length ? Math.floor(45_000 / list.length) : 45_000;
   const outcomes = [];
   for (const s of list) {
-    outcomes.push(await syncMailbox(supa, s, budgetEach));
+    try {
+      const outcome = await syncMailbox(supa, s, budgetEach);
+      outcomes.push(outcome);
+      if (outcome && typeof outcome === "object" && "error" in outcome && outcome.error) {
+        await reportError("mailbox", String(outcome.error), { detail: `email_sources ${s.id}` }, supa);
+      }
+    } catch (e) {
+      await reportError("mailbox", e, { detail: `email_sources ${s.id}` }, supa);
+      outcomes.push({ id: s.id, error: (e as Error).message });
+    }
   }
   return NextResponse.json({ checked: outcomes.length, outcomes });
 }

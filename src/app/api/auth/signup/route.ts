@@ -3,15 +3,16 @@ import { db } from "@/lib/db";
 import { createAccount, SESSION_COOKIE, SESSION_MAX_AGE, startSession } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  const { identifier, password } = (await req.json().catch(() => ({}))) as {
+  const { identifier, password, propertyType } = (await req.json().catch(() => ({}))) as {
     identifier?: string;
     password?: string;
+    propertyType?: string;
   };
   if (!identifier || !password) {
     return NextResponse.json({ error: "Enter your username or email and password" }, { status: 400 });
   }
   const supa = db();
-  const { account, error } = await createAccount(supa, identifier, password);
+  const { account, error } = await createAccount(supa, identifier, password, propertyType ?? null);
   if (error || !account) return NextResponse.json({ error }, { status: 400 });
 
   const token = await startSession(supa, account.id);

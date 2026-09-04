@@ -297,22 +297,6 @@ html {
   scroll-behavior: smooth;
 }
 
-/* The hero's scroll cue: the mouse body breathes, the wheel drifts down. */
-.hero-scroll-cue {
-  animation: rb-cue-pulse 2.6s ease-in-out infinite;
-}
-.hero-scroll-wheel {
-  animation: rb-cue-wheel 2.6s ease-in-out infinite;
-}
-@keyframes rb-cue-pulse {
-  0%, 100% { opacity: 0.45; transform: translateY(0); }
-  50% { opacity: 1; transform: translateY(3px); }
-}
-@keyframes rb-cue-wheel {
-  0%, 100% { transform: translateY(0); opacity: 0.9; }
-  55% { transform: translateY(7px); opacity: 0.25; }
-}
-
 @keyframes rb-rise {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
@@ -465,3 +449,8 @@ html {
   filter: saturate(0.95) contrast(1.02) brightness(1.12) hue-rotate(-6deg);
   mix-blend-mode: screen;
 }
+
+/* Legal pages: plain lists that read as prose. */
+.legal-body ul { padding-left: 1.2rem; margin: 0.4rem 0; display: grid; gap: 0.35rem; list-style: disc; }
+.legal-body p + p { margin-top: 0.6rem; }
+.legal-body a { color: var(--accent); }

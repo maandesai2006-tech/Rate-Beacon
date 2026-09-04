@@ -64,7 +64,9 @@ export interface Anchor {
  */
 export async function anchorForProfile(
   supa: SupabaseClient,
-  profileId: number
+  profileId: number,
+  // For writing a freshly geocoded position back; the registry is shared.
+  shared: SupabaseClient = supa
 ): Promise<{ anchor: Anchor | null; error?: string }> {
   const { data: mine } = await supa
     .from("profile_hotels")
@@ -111,7 +113,7 @@ export async function anchorForProfile(
   if (unplaced?.hotels?.name) {
     const geo = await geocodeHotel(unplaced.hotels.name, profile?.city_name ?? null);
     if (geo) {
-      await supa
+      await shared
         .from("hotels")
         .update({
           latitude: geo.latitude,
@@ -156,6 +158,7 @@ export async function anchorForProfile(
  * the listing until it stops returning new keys.
  */
 export async function refreshDirectory(
+  // The directory is shared: pass the service connection.
   supa: SupabaseClient,
   locationKey: string,
   { force = false, maxPages = 4, pageSize = 30 } = {}
@@ -229,6 +232,7 @@ export async function refreshDirectory(
 
 /** Place directory entries that arrived without coordinates. Bounded — Nominatim asks for ~1/s. */
 export async function placeDirectory(
+  // Writes coordinates into the shared directory: pass the service connection.
   supa: SupabaseClient,
   locationKey: string,
   cityName: string | null,

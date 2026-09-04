@@ -288,6 +288,8 @@ export async function probeListShapes(
   return { winner, outcomes };
 }
 
+// api_settings is server-only, so both of these need the service connection.
+// Callers pass it explicitly; the scoped one would be refused.
 async function rememberShape(supa: SupabaseClient, shape: string) {
   await supa
     .from("api_settings")

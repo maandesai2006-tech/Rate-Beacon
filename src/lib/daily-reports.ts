@@ -5,6 +5,7 @@
 // same row and the same flags.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { encryptSecret } from "./secrets";
 import {
   analyzeDailyReport,
   deriveMetrics,
@@ -85,7 +86,10 @@ export async function storeDailyReport(
     raw_pdf_url: input.rawPdfUrl ?? null,
     // The report used to be written to a second table purely to keep these,
     // and nothing read that table. They live on the row they describe.
-    raw_text: input.rawText ? input.rawText.slice(0, 60_000) : null,
+    // The night audit is the hotel's internal operating record. It is kept as
+    // evidence for what the parser saw, but encrypted under APP_SECRET so a
+    // copy of the database on its own does not expose it.
+    raw_text: input.rawText ? await encryptSecret(input.rawText.slice(0, 60_000)) : null,
     message_id: input.messageId ?? null,
     file_name: input.fileName ?? null,
     subject: input.subject ?? null,

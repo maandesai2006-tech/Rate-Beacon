@@ -46,6 +46,13 @@ export default function SiteNav({ signedIn }: { signedIn: boolean }) {
           >
             How it works
           </Link>
+          <Link
+            href="/#contact"
+            className="rounded-lg px-3 py-1.5 text-[13px] no-underline"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Contact
+          </Link>
         </nav>
 
         <div className="ml-auto flex items-center gap-2">

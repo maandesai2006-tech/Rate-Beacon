@@ -10,12 +10,13 @@ import { SESSION_COOKIE } from "@/lib/session";
 // Session *validity* is still checked in the route handlers — the database is
 // not reachable from Edge middleware, so this only routes on the presence of a
 // cookie.
-const PUBLIC_PAGES = new Set(["/", "/login", "/signup", "/demo"]);
+const PUBLIC_PAGES = new Set(["/", "/login", "/signup", "/demo", "/privacy", "/terms"]);
 
 const PUBLIC_API_PREFIXES = [
   "/api/auth",
   "/api/cron",
   "/api/demo",
+  "/api/contact",
 ];
 
 export function middleware(req: NextRequest) {

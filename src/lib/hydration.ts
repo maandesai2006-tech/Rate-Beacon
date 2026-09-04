@@ -18,6 +18,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { db } from "./db";
 import { buildJobs, processJobs, runEnrichment } from "./snapshot";
 import { todayISO } from "./dates";
+import { reportError } from "./errors";
 
 export interface HydrationState {
   runDate: string;
@@ -154,6 +155,13 @@ export async function tickHydration(
 
   const nextCursor = cursor + r.done;
   const complete = nextCursor >= plan.jobs.length;
+
+  // A slice that made no progress and produced errors is an outage, not a
+  // quiet night — record it where someone will see it.
+  if (r.done === 0 && r.errors.length > 0) {
+    await reportError("collection", r.errors[0], { detail: r.errors.slice(0, 5).join("\n") }, supa);
+  }
+  if (plan.note) await reportError("collection", plan.note, {}, supa);
 
   // Enrichment (events, review scores) is only worth running once the day's
   // rates are in, so it rides on the tick that finishes the run.

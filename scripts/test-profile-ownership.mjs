@@ -237,5 +237,33 @@ const validInput = (over = {}) => ({
   check("none of them were written", db.tables.profiles.length === 0);
 }
 
+// ── Plan limits, as passed in by the route ──────────────────────────────
+{
+  const db = fakeDb({
+    profiles: [
+      { id: 1, account_id: 9, name: "One", city_code: "g1" },
+      { id: 2, account_id: 9, name: "Two", city_code: "g2" },
+    ],
+  });
+  const limits = { maxProfiles: 2, maxHorizon: 30 };
+
+  const third = await saveProfile(db, 9, validInput(), { limits });
+  check("a third profile on a two-profile plan is refused", third.ok === false);
+  check("the refusal names the plan's ceiling", !third.ok && /allows 2/.test(third.error));
+  check("nothing was written", db.tables.profiles.length === 2);
+
+  const edit = await saveProfile(db, 9, validInput({ profileId: 1, horizonDays: 90 }), { limits });
+  check("editing an existing profile is still allowed at the cap", edit.ok === true);
+  check(
+    "the horizon is clamped to the plan",
+    db.tables.profiles.find((p) => p.id === 1).horizon_days === 30,
+    `horizon was ${db.tables.profiles.find((p) => p.id === 1).horizon_days}`
+  );
+
+  const unlimited = fakeDb();
+  const free = await saveProfile(unlimited, 9, validInput({ horizonDays: 90 }));
+  check("with no limits given, nothing is clamped or refused", free.ok === true && unlimited.tables.profiles[0].horizon_days === 90);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

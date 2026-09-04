@@ -23,7 +23,7 @@ export const maxDuration = 60;
 export async function POST(req: NextRequest) {
   const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
   if (!auth.ok) return auth.response;
-  const { accountId, supa } = auth;
+  const { accountId, supa, shared } = auth;
 
   const locationKey = (req.nextUrl.searchParams.get("locationKey") ?? "g34550").trim();
   if (!/^g\d+$/.test(locationKey)) {
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
 
   const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
 
-  const { winner, outcomes } = await probeListShapes(supa, locationKey);
+  const { winner, outcomes } = await probeListShapes(shared, locationKey);
 
   // The map source, from the profile's own anchor when there is one so the
   // probe reflects the market the customer actually sits in.
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
       .eq("id", profileId)
       .maybeSingle<{ id: number }>();
     if (profile) {
-      const { anchor } = await anchorForProfile(supa, profile.id);
+      const { anchor } = await anchorForProfile(supa, profile.id, shared);
       if (anchor) anchorPoint = { latitude: anchor.latitude, longitude: anchor.longitude };
     }
   }

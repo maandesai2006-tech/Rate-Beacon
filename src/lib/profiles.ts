@@ -90,10 +90,27 @@ function clean(input: SaveProfileInput) {
  * does not exist, so the endpoint cannot be used to discover which profiles
  * are real.
  */
+/** The two limits a profile save has to respect. Looked up by the route. */
+export interface ProfileLimits {
+  maxProfiles: number;
+  maxHorizon: number;
+}
+
+// No ceiling at all — what a caller that has not looked up a plan gets.
+const NO_LIMITS: ProfileLimits = { maxProfiles: Number.POSITIVE_INFINITY, maxHorizon: 120 };
+
 export async function saveProfile(
   supa: SupabaseClient,
   accountId: number,
-  input: SaveProfileInput
+  input: SaveProfileInput,
+  {
+    // The hotel registry is shared and the scoped connection cannot write it;
+    // tests pass the same stand-in for both.
+    shared = supa,
+    // Passed in rather than fetched here, so this module depends on nothing
+    // but the database and the rule can be tested with any limit.
+    limits = NO_LIMITS,
+  }: { shared?: SupabaseClient; limits?: ProfileLimits } = {}
 ): Promise<SaveResult> {
   if (!input.cityCode || !Array.isArray(input.hotels) || input.hotels.length === 0) {
     return { ok: false, status: 400, error: "Pick a location and at least one hotel to track" };
@@ -105,6 +122,10 @@ export async function saveProfile(
   }
 
   const fields = clean(input);
+  // The plan's horizon is a ceiling on what the collector will price for this
+  // account; a longer one costs everyone else's collection window.
+  fields.horizon_days = Math.min(fields.horizon_days, limits.maxHorizon);
+
   let profileId = input.profileId ?? null;
   let created = false;
 
@@ -119,6 +140,14 @@ export async function saveProfile(
       .eq("account_id", accountId);
     if (error) return { ok: false, status: 500, error: error.message };
   } else {
+    const existing = await profilesForAccount(supa, accountId);
+    if (existing.length >= limits.maxProfiles) {
+      return {
+        ok: false,
+        status: 403,
+        error: `This plan allows ${limits.maxProfiles} propert${limits.maxProfiles === 1 ? "y" : "ies"}. Contact us to add more.`,
+      };
+    }
     // The owner is written with the row, not afterwards: a profile that exists
     // for even a moment without one is a profile nobody can see.
     const { data, error } = await supa
@@ -133,8 +162,9 @@ export async function saveProfile(
   }
 
   // The hotel registry is shared across every account — a hotel is a hotel —
-  // so this upsert is deliberately not scoped.
-  const { error: hotelsError } = await supa
+  // so this write goes through the service connection. The scoped one is
+  // read-only on this table by design.
+  const { error: hotelsError } = await shared
     .from("hotels")
     .upsert(
       input.hotels.map((h) => ({ hotel_id: h.hotelId, name: h.name })),

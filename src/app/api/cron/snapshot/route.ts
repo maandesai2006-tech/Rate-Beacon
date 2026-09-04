@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { tickHydration, registerSchedulerTarget } from "@/lib/hydration";
+import { reportError } from "@/lib/errors";
 
 export const maxDuration = 60;
 
@@ -32,6 +33,7 @@ export async function GET(req: NextRequest) {
         : `Collected ${state.cursor} of ${state.total} hotel-nights so far.`,
     });
   } catch (e) {
+    await reportError("collection", e);
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }

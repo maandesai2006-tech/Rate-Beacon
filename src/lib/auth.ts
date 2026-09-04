@@ -63,10 +63,14 @@ function looksLikeEmail(s: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);
 }
 
+export const PROPERTY_TYPES = ["franchised", "independent", "bnb", "other"] as const;
+export type PropertyType = (typeof PROPERTY_TYPES)[number];
+
 export async function createAccount(
   supa: SupabaseClient,
   identifier: string,
-  password: string
+  password: string,
+  propertyType: string | null = null
 ): Promise<{ account?: { id: number; label: string }; error?: string }> {
   const clean = identifier.trim();
   if (clean.length < 3) return { error: "Enter an email address or a username" };
@@ -83,11 +87,15 @@ export async function createAccount(
     username: string | null;
     password_hash: string;
     password_salt: string;
+    property_type: PropertyType | null;
   } = {
     email: isEmail ? clean.toLowerCase() : null,
     username: isEmail ? null : clean,
     password_hash: hash,
     password_salt: salt,
+    property_type: (PROPERTY_TYPES as readonly string[]).includes(propertyType ?? "")
+      ? (propertyType as PropertyType)
+      : null,
   };
   const { data, error } = await supa
     .from("accounts")
@@ -168,10 +176,27 @@ export const SESSION_MAX_AGE = SESSION_DAYS * 86400;
  * Returning the client rather than just the id is what makes the safe path the
  * short one: there is no reason for a handler to reach for db() at all.
  */
+/**
+ * The signed-in account, with the two connections a route needs.
+ *
+ *   supa    scoped to the account. Every tenant table — profiles, tracked
+ *           hotels, competitor edges, reports, credentials — goes through it,
+ *           and Postgres refuses anything belonging to anyone else.
+ *
+ *   shared  the service connection, for the tables that belong to nobody:
+ *           the hotel registry, the market directory, the learned API shapes.
+ *           The scoped connection can read them and cannot write them, on
+ *           purpose — a customer must not be able to rename a hotel every
+ *           other customer sees. Routes that add a hotel or place one on the
+ *           map write through this one.
+ *
+ * The scope audit forbids `shared` from touching a tenant table, so the split
+ * is enforced rather than remembered.
+ */
 export async function requireAccount(
   token: string | undefined
 ): Promise<
-  | { ok: true; accountId: number; supa: SupabaseClient }
+  | { ok: true; accountId: number; supa: SupabaseClient; shared: SupabaseClient }
   | { ok: false; response: Response }
 > {
   const { db, dbForAccount } = await import("./db");
@@ -182,5 +207,5 @@ export async function requireAccount(
       response: Response.json({ error: "Sign in required" }, { status: 401 }),
     };
   }
-  return { ok: true, accountId, supa: await dbForAccount(accountId) };
+  return { ok: true, accountId, supa: await dbForAccount(accountId), shared: db() };
 }

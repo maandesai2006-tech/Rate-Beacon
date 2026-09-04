@@ -23,7 +23,7 @@ export const maxDuration = 60;
 export async function GET(req: NextRequest) {
   const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
   if (!auth.ok) return auth.response;
-  const { accountId, supa } = auth;
+  const { accountId, supa, shared } = auth;
 
   const q = req.nextUrl.searchParams;
   const profileId = Number(q.get("profileId")) || null;
@@ -62,13 +62,13 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const { anchor, error } = await anchorForProfile(supa, profile.id);
+  const { anchor, error } = await anchorForProfile(supa, profile.id, shared);
   if (!anchor) return NextResponse.json({ error }, { status: 400 });
 
   // Fill the directory for this market if it is stale, then place anything
   // that came back without coordinates so the radius filter can see it.
-  const dir = await refreshDirectory(supa, anchor.locationKey);
-  await placeDirectory(supa, anchor.locationKey, anchor.cityName, query ? 4 : 10);
+  const dir = await refreshDirectory(shared, anchor.locationKey);
+  await placeDirectory(shared, anchor.locationKey, anchor.cityName, query ? 4 : 10);
 
   // Search runs whether or not the listing answered: hotels already known to
   // the deployment are a second source, so a failed upstream call narrows the

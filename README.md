@@ -144,3 +144,29 @@ priced over a short 7-night window so the extra coverage stays cheap.
 
 Next.js 15 (App Router, TypeScript) · Tailwind CSS 4 · Supabase (Postgres) ·
 Xotelo API (`/api/rates`, `/api/list`) · Vercel Cron.
+
+## Rotating credentials
+
+Every secret this project uses has, at some point, been pasted into a chat
+window or a terminal. Before a second customer's data is in the system, rotate
+all of them. In order, because some depend on others:
+
+1. **`APP_SECRET`** — generate a new 32+ character random string. This
+   invalidates every stored mailbox password and every encrypted report
+   text, and changes each account's derived Supabase credentials. After
+   deploying: reconnect any mailbox from the reports tab (the password is
+   re-encrypted under the new secret), and the app resets each account's
+   auth-user password automatically on its next request.
+2. **`CRON_SECRET`** — any long random string. The app rewrites it into
+   `api_settings` on the next run, so the in-database scheduler follows.
+3. **`INGEST_SECRET`** — set the same new value on Vercel and in the
+   Cloudflare Worker (`npx wrangler secret put INGEST_SECRET`).
+4. **Supabase service role key** — Project Settings → API → *Rotate*. Update
+   `SUPABASE_SERVICE_ROLE_KEY` on Vercel and redeploy.
+5. **Third-party keys** you have set (Gemini, Ticketmaster) — regenerate in
+   each provider's console and update the environment variable.
+6. **App passwords** — sign in as each account you control and change them;
+   there is no shared admin password to rotate.
+
+Then run `/api/system-check`. Every row should be green, and *Tenant
+isolation* should still read "Enforced by the database".

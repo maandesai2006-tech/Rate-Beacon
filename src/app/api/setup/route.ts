@@ -10,6 +10,7 @@ import {
 } from "@/lib/profiles";
 import { queueHydration, registerSchedulerTarget } from "@/lib/hydration";
 import { geocodeHotel } from "@/lib/geo";
+import { planLimits } from "@/lib/plans";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -52,12 +53,13 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
   if (!auth.ok) return auth.response;
-  const { accountId, supa } = auth;
+  const { accountId, supa, shared } = auth;
 
   const body = (await req.json().catch(() => null)) as SaveProfileInput | null;
   if (!body) return NextResponse.json({ error: "Expected a profile" }, { status: 400 });
 
-  const result = await saveProfile(supa, accountId, body);
+  const limits = await planLimits(supa, accountId);
+  const result = await saveProfile(supa, accountId, body, { shared, limits });
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
@@ -66,7 +68,7 @@ export async function POST(req: NextRequest) {
   // rather than left behind a button nobody knows to press: put the hotels on
   // the map so the forecast and the radius search have somewhere to measure
   // from, and put today's rates in the queue.
-  const firstRun = await prepare(supa, body);
+  const firstRun = await prepare(shared, body);
 
   return NextResponse.json({
     ok: true,
@@ -99,12 +101,12 @@ export async function DELETE(req: NextRequest) {
  * prices would not appear until the next nightly run.
  */
 async function prepare(
-  supa: SupabaseClient,
+  shared: SupabaseClient,
   body: SaveProfileInput
 ): Promise<{ placed: number; queued: boolean }> {
   let placed = 0;
 
-  const { data: unplaced } = await supa
+  const { data: unplaced } = await shared
     .from("hotels")
     .select("hotel_id, name")
     .in(
@@ -118,7 +120,7 @@ async function prepare(
   for (const hotel of unplaced ?? []) {
     const geo = await geocodeHotel(hotel.name, body.cityName || null);
     if (!geo) continue;
-    await supa
+    await shared
       .from("hotels")
       .update({
         latitude: geo.latitude,

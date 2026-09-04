@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { db, dbForAccount, tenantConfig } from "@/lib/db";
 import { hydrationState, registerSchedulerTarget } from "@/lib/hydration";
+import { recentErrors } from "@/lib/errors";
+import { NEAR_NIGHTS, MID_NIGHTS } from "@/lib/snapshot";
 
 // A one-click health report, in plain language. Every external dependency is
 // probed from the server (they are not reachable from a browser), so the
@@ -14,14 +16,22 @@ interface Check {
   detail: string;
 }
 
-async function timed(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; ms: number; body: string }> {
+// `body` is the whole response and is what gets parsed; `preview` is the
+// first few hundred characters and is what gets shown. They used to be the
+// same truncated string, so any real rate response — longer than the cut —
+// failed to parse and the check reported a working feed as broken.
+async function timed(
+  url: string,
+  init?: RequestInit
+): Promise<{ ok: boolean; status: number; ms: number; body: string; preview: string }> {
   const t0 = Date.now();
   try {
     const res = await fetch(url, { ...init, cache: "no-store" });
-    const body = (await res.text()).slice(0, 400);
-    return { ok: res.ok, status: res.status, ms: Date.now() - t0, body };
+    const body = await res.text();
+    return { ok: res.ok, status: res.status, ms: Date.now() - t0, body, preview: body.slice(0, 400) };
   } catch (e) {
-    return { ok: false, status: 0, ms: Date.now() - t0, body: (e as Error).message };
+    const message = (e as Error).message;
+    return { ok: false, status: 0, ms: Date.now() - t0, body: message, preview: message.slice(0, 400) };
   }
 }
 
@@ -57,7 +67,7 @@ export async function GET() {
     ok: ratesOk,
     detail: ratesOk
       ? `Responding in ${rates.ms}ms.`
-      : `HTTP ${rates.status} in ${rates.ms}ms. ${rates.body.slice(0, 180)}`,
+      : `HTTP ${rates.status} in ${rates.ms}ms. ${rates.preview.slice(0, 180)}`,
   });
 
   // 3. Hotel listing — the source of ratings and competitor discovery. The
@@ -84,7 +94,7 @@ export async function GET() {
       n = (j.result?.list ?? []).length;
       if (j.error) msg = typeof j.error === "string" ? j.error : JSON.stringify(j.error);
     } catch {
-      msg = r.body.slice(0, 90);
+      msg = r.preview.slice(0, 90);
     }
     if (n > 0) {
       listWinner = label;
@@ -110,7 +120,7 @@ export async function GET() {
   checks.push({
     name: "Geocoding",
     ok: geo.ok,
-    detail: geo.ok ? `Responding in ${geo.ms}ms.` : `HTTP ${geo.status}. ${geo.body.slice(0, 160)}`,
+    detail: geo.ok ? `Responding in ${geo.ms}ms.` : `HTTP ${geo.status}. ${geo.preview.slice(0, 160)}`,
   });
 
   // 5. Mail reader (runs outside Vercel, which cannot open IMAP sockets)
@@ -133,7 +143,7 @@ export async function GET() {
       ok: reachable,
       detail: reachable
         ? `Deployed and responding in ${r.ms}ms.`
-        : `Not reachable (HTTP ${r.status}). ${r.body.slice(0, 140)}`,
+        : `Not reachable (HTTP ${r.status}). ${r.preview.slice(0, 140)}`,
     });
   } catch (e) {
     checks.push({ name: "Mail reader", ok: false, detail: (e as Error).message });
@@ -268,6 +278,27 @@ export async function GET() {
     });
   } catch (e) {
     checks.push({ name: "Rate collection", ok: false, detail: (e as Error).message });
+  }
+
+  // 9. Recorded failures
+  //
+  // The jobs run with nobody watching. This is the one place their failures
+  // surface, so a customer's reports cannot quietly stop for a week.
+  try {
+    const recent = await recentErrors(supa);
+    const areas = Object.entries(recent.byArea)
+      .map(([area, n]) => `${area} ${n}`)
+      .join(", ");
+    checks.push({
+      name: "Errors, last 24h",
+      ok: recent.count === 0,
+      detail:
+        recent.count === 0
+          ? `None recorded. Collection prices the next ${NEAR_NIGHTS} nights daily, nights ${NEAR_NIGHTS}–${MID_NIGHTS} every third day, and the rest weekly.`
+          : `${recent.count} (${areas}). Latest, ${recent.latest?.area}: ${recent.latest?.message}`,
+    });
+  } catch (e) {
+    checks.push({ name: "Errors, last 24h", ok: false, detail: (e as Error).message });
   }
 
   return NextResponse.json({ checkedAt: new Date().toISOString(), checks });

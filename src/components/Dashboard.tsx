@@ -485,6 +485,33 @@ export default function Dashboard() {
           >
             Sign out
           </button>
+          <button
+            onClick={async () => {
+              // Two deliberate steps: a native confirm, then the word itself,
+              // because this removes every report and rate override the account
+              // holds and there is no undo.
+              const typed = window.prompt(
+                "This deletes your account and everything in it — profiles, competitive sets, manager's reports and their analysis, mailbox credentials. There is no undo.\n\nType DELETE to confirm."
+              );
+              if (typed !== "DELETE") return;
+              const res = await fetch("/api/auth/account", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirm: "DELETE" }),
+              });
+              const j = await res.json().catch(() => ({}));
+              if (!res.ok) {
+                window.alert(j.error ?? "The account could not be deleted.");
+                return;
+              }
+              window.location.href = "/";
+            }}
+            className="btn-ghost px-3 py-1.5 text-[13px]"
+            style={{ color: "var(--status-critical)" }}
+            title="Delete this account and all of its data"
+          >
+            Delete account
+          </button>
           <Link href={`/setup?profileId=${profile.id}`} className="btn-ghost px-3 py-1.5 text-[13px]">
             Edit profile
           </Link>

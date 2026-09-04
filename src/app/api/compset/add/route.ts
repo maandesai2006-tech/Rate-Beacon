@@ -3,6 +3,8 @@ import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { anchorForProfile } from "@/lib/compset";
 import { milesBetween } from "@/lib/hotel-match";
 import { verifyHotelKey } from "@/lib/xotelo";
+import { geocodeHotel } from "@/lib/geo";
+import { planLimits } from "@/lib/plans";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +31,7 @@ interface Body {
 export async function POST(req: NextRequest) {
   const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
   if (!auth.ok) return auth.response;
-  const { accountId, supa } = auth;
+  const { accountId, supa, shared } = auth;
 
   const body = (await req.json().catch(() => ({}))) as Body;
   const profileId = Number(body.profileId) || null;
@@ -45,6 +47,23 @@ export async function POST(req: NextRequest) {
     .eq("id", profileId ?? -1)
     .maybeSingle<{ id: number }>();
   if (!profile) return NextResponse.json({ error: "Unknown profile" }, { status: 400 });
+
+  // A compset has a ceiling per plan. The median needs a handful of the right
+  // hotels, not every hotel in town, and each one is a nightly lookup.
+  const limits = await planLimits(supa, accountId);
+  const { count: current } = await supa
+    .from("profile_hotels")
+    .select("hotel_id", { count: "exact", head: true })
+    .eq("profile_id", profile.id)
+    .eq("is_mine", false);
+  const room = limits.maxCompetitors - (current ?? 0);
+  if (room <= 0) {
+    return NextResponse.json(
+      { error: `This plan allows ${limits.maxCompetitors} competitors per property. Remove one to add another, or contact us.` },
+      { status: 403 }
+    );
+  }
+  if (wanted.length > room) wanted.splice(room);
 
   // Nothing joins a compset it cannot be priced in. A hotel that is real but
   // sold out for the probe night still counts — those are the ones worth
@@ -86,7 +105,7 @@ export async function POST(req: NextRequest) {
     >();
   const known = new Map((dir ?? []).map((d) => [d.hotel_id, d]));
 
-  await supa.from("hotels").upsert(
+  const { error: registryError } = await shared.from("hotels").upsert(
     accepted.map((h) => {
       const d = known.get(h.hotelKey);
       return {
@@ -102,7 +121,17 @@ export async function POST(req: NextRequest) {
     { onConflict: "hotel_id", ignoreDuplicates: false }
   );
 
-  await supa.from("profile_hotels").upsert(
+  if (registryError) {
+    return NextResponse.json(
+      { error: `The hotels could not be saved: ${registryError.message}` },
+      { status: 500 }
+    );
+  }
+
+  // A write that fails here used to be reported as "added" anyway, because the
+  // count came from the verification step rather than from the database. The
+  // QA sweep caught it: the response said success and the hotel was absent.
+  const { error: membershipError } = await supa.from("profile_hotels").upsert(
     accepted.map((h) => ({
       profile_id: profile.id,
       hotel_id: h.hotelKey,
@@ -111,6 +140,41 @@ export async function POST(req: NextRequest) {
     })),
     { onConflict: "profile_id,hotel_id", ignoreDuplicates: true }
   );
+  if (membershipError) {
+    return NextResponse.json(
+      { error: `The hotels could not be added to this profile: ${membershipError.message}` },
+      { status: 500 }
+    );
+  }
+
+  // Every hotel gets a position the moment it is added. The forecast reads
+  // it, the radius search measures from it, and a competitor without one sits
+  // outside both — so this is done here, bounded and best-effort, not left to
+  // a background pass that may or may not run before anyone looks.
+  const { anchor: place } = await anchorForProfile(supa, profile.id, shared);
+  for (const h of accepted) {
+    const d = known.get(h.hotelKey);
+    if (d?.latitude != null && d?.longitude != null) continue;
+    const geo = await geocodeHotel(d?.name ?? h.name ?? h.hotelKey, place?.cityName ?? null);
+    if (!geo) continue;
+    known.set(h.hotelKey, {
+      hotel_id: h.hotelKey,
+      name: d?.name ?? h.name ?? h.hotelKey,
+      latitude: geo.latitude,
+      longitude: geo.longitude,
+      rating: d?.rating ?? null,
+      review_count: d?.review_count ?? null,
+    });
+    await shared
+      .from("hotels")
+      .update({
+        latitude: geo.latitude,
+        longitude: geo.longitude,
+        address: geo.address,
+        geo_updated_at: new Date().toISOString(),
+      })
+      .eq("hotel_id", h.hotelKey);
+  }
 
   // Tie them to a baseline so they land in that hotel's grid and not others'.
   let baseline = body.baselineHotelId ?? null;
@@ -127,7 +191,7 @@ export async function POST(req: NextRequest) {
 
   let edges = 0;
   if (baseline) {
-    const { anchor } = await anchorForProfile(supa, profile.id);
+    const { anchor } = await anchorForProfile(supa, profile.id, shared);
     const rows = accepted.map((h) => {
       const d = known.get(h.hotelKey);
       const distance =
@@ -145,7 +209,13 @@ export async function POST(req: NextRequest) {
     const { error } = await supa
       .from("baseline_comps")
       .upsert(rows, { onConflict: "profile_id,baseline_hotel_id,comp_hotel_id", ignoreDuplicates: false });
-    if (!error) edges = rows.length;
+    if (error) {
+      return NextResponse.json(
+        { error: `The hotels were saved but could not be tied to ${baseline}'s grid: ${error.message}` },
+        { status: 500 }
+      );
+    }
+    edges = rows.length;
   }
 
   return NextResponse.json({

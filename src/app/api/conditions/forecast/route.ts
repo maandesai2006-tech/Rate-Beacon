@@ -24,7 +24,7 @@ interface OpenMeteoLocation {
 export async function GET(req: NextRequest) {
   const auth = await requireAccount(req.cookies.get(SESSION_COOKIE)?.value);
   if (!auth.ok) return auth.response;
-  const { accountId, supa } = auth;
+  const { accountId, supa, shared } = auth;
 
   const profileId = Number(req.nextUrl.searchParams.get("profileId")) || null;
   const range = (req.nextUrl.searchParams.get("range") ?? "12h") as Range;
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
       if (!geo) continue;
       h.latitude = geo.latitude;
       h.longitude = geo.longitude;
-      await supa
+      await shared
         .from("hotels")
         .update({
           latitude: geo.latitude,

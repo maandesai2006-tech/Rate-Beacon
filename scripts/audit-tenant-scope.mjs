@@ -40,6 +40,7 @@ const CROSS_TENANT_ALLOWED = {
   "api/auth/login/route.ts": "runs before an account is known",
   "api/auth/signup/route.ts": "creates the account",
   "api/auth/logout/route.ts": "clears a session by token",
+  "api/auth/account/route.ts": "deletes the signed-in account and its cascade; only the service role can remove the auth user behind it",
   "api/auth/me/route.ts": "resolves the session to an account",
   "api/ingest-report/route.ts": "authenticated by a shared secret, not a session",
   "api/geocode/route.ts": "places hotels in the shared directory",
@@ -82,6 +83,21 @@ for (const file of walk(ROOT)) {
   // account; dbForAccount() is the lower-level way to the same thing.
   const usesScoped = /\b(requireAccount|dbForAccount)\s*\(/.test(src);
   const usesService = /\bdb\(\)/.test(src);
+
+  // requireAccount also hands back `shared`, the service connection, for the
+  // tables that belong to nobody (hotels, the directory, learned API shapes).
+  // It must never be pointed at a tenant table — that would be the old bug
+  // with a nicer name.
+  const sharedOnTenant = TENANT_TABLES.filter((t) =>
+    new RegExp(`\\bshared\\s*\\.from\\(\\s*["'\`]${t}["'\`]`).test(src)
+  );
+  if (sharedOnTenant.length) {
+    problems++;
+    console.log(
+      `  FAIL  ${rel} uses the shared (service) client on ${sharedOnTenant.join(", ")}. Tenant tables go through the scoped client only.`
+    );
+    continue;
+  }
 
   if (!usesScoped) {
     problems++;
