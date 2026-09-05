@@ -18,7 +18,8 @@ export type ErrorArea =
   | "geocode"
   | "discovery"
   | "auth"
-  | "contact";
+  | "contact"
+  | "assistant";
 
 export async function reportError(
   area: ErrorArea,

@@ -14,6 +14,8 @@ import Sparkline from "@/components/Sparkline";
 import ReportsPanel from "@/components/ReportsPanel";
 import HotelForecast from "@/components/HotelForecast";
 import CompsetPicker from "@/components/CompsetPicker";
+import Assistant from "@/components/Assistant";
+import TravelTrend from "@/components/TravelTrend";
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
 
@@ -793,6 +795,13 @@ export default function Dashboard() {
               glance; these are the two places there is more to see, so they
               are the only ones that open. */}
           <HomeSection
+            title="Ask Rate Beacon"
+            subtitle="Your rates, your reports and the market — answered from the data below"
+          >
+            <Assistant profileId={profileId} baselineHotelId={baselineId} onChanged={load} />
+          </HomeSection>
+
+          <HomeSection
             title="Rate grid"
             subtitle={`Next ${Math.min(7, visibleRows.length)} nights against your compset`}
             onOpen={() => setTab("grid")}
@@ -816,8 +825,9 @@ export default function Dashboard() {
             <TrendChart rows={rows} fmt={fmt} myName={myHotel?.name ?? "My rate"} />
           </HomeSection>
 
-          <HomeSection title="Conditions" subtitle="Forecast at each of your properties">
+          <HomeSection title="Conditions" subtitle="Forecast and travel into the market">
             <HotelForecast profileId={profileId} />
+            <TravelTrend profileId={profileId} baselineHotelId={baselineId} />
           </HomeSection>
         </div>
       )}
