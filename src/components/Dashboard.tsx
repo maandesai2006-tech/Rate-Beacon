@@ -16,6 +16,8 @@ import HotelForecast from "@/components/HotelForecast";
 import CompsetPicker from "@/components/CompsetPicker";
 import Assistant from "@/components/Assistant";
 import TravelTrend from "@/components/TravelTrend";
+import ForecastEvidence, { DemandScoreButton } from "@/components/ForecastEvidence";
+import ForecastBacktest from "@/components/ForecastBacktest";
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
 
@@ -29,6 +31,7 @@ interface Hydration {
   finishedAt: string | null;
   percent: number;
   status: "idle" | "collecting" | "complete";
+  forecastPending?: boolean;
   errors?: string[];
 }
 
@@ -94,16 +97,16 @@ interface TooltipState {
   lines: string[];
 }
 
-// Three places to be: the overview you land on, the full grid, and the
-// reports. Trends, the ladder and conditions used to be tabs of their own;
+// The overview, rate grid, forecast backtest and manager reports.
+// Trends, the ladder and conditions used to be tabs of their own;
 // they are sections of the overview now, because they are things you glance at
 // on the way to a decision rather than destinations.
-type Tab = "home" | "grid" | "reports";
+type Tab = "home" | "grid" | "backtest" | "reports";
 
 const TAB_STORAGE_KEY = "rb-tab";
 
 function isTab(v: string | null): v is Tab {
-  return v === "home" || v === "grid" || v === "reports";
+  return v === "home" || v === "grid" || v === "backtest" || v === "reports";
 }
 type Theme = "light" | "dark";
 
@@ -113,6 +116,7 @@ export default function Dashboard() {
   const [baselineId, setBaselineId] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
   const [data, setData] = useState<GridPayload | null>(null);
+  const [dataContext, setDataContext] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The tab is a property of the app, not of the hotel being viewed, so it
   // survives switching hotels and reloading the page.
@@ -131,8 +135,14 @@ export default function Dashboard() {
   const [checking, setChecking] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [hydration, setHydration] = useState<Hydration | null>(null);
+  const [hydrationWatch, setHydrationWatch] = useState(0);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [drawerDate, setDrawerDate] = useState<string | null>(null);
+  const [forecastDate, setForecastDate] = useState<string | null>(null);
+  const gridRequest = useRef<AbortController | null>(null);
+  const gridContext = useRef("");
+  const requestContext = `${profileId ?? ""}:${baselineId ?? ""}`;
+  gridContext.current = requestContext;
   const [editingDate, setEditingDate] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   // What the cell held when the edit began — used so simply clicking a cell
@@ -196,11 +206,17 @@ export default function Dashboard() {
   }, []);
 
   const load = useCallback(async () => {
+    // A delayed refresh must not restore the hotel that was selected before a
+    // profile/baseline switch. Only the current context can update the grid.
+    if (gridContext.current !== requestContext) return;
+    gridRequest.current?.abort();
+    const controller = new AbortController();
+    gridRequest.current = controller;
     try {
       const qs = new URLSearchParams();
       if (profileId) qs.set("profileId", String(profileId));
       if (baselineId) qs.set("baselineId", baselineId);
-      const res = await fetch(`/api/grid?${qs}`);
+      const res = await fetch(`/api/grid?${qs}`, { signal: controller.signal });
       const text = await res.text();
       let j: GridPayload & { error?: string };
       try {
@@ -211,16 +227,26 @@ export default function Dashboard() {
         );
       }
       if (!res.ok) throw new Error(j.error ?? `Failed to load (${res.status})`);
+      if (controller.signal.aborted || gridContext.current !== requestContext) return;
       setData(j);
+      setDataContext(requestContext);
       if (j.configured && j.activeBaselineId) setBaselineId(j.activeBaselineId);
       setError(null);
     } catch (e) {
+      if (controller.signal.aborted || gridContext.current !== requestContext) return;
       setError((e as Error).message);
     }
-  }, [profileId, baselineId]);
+  }, [profileId, baselineId, requestContext]);
 
   useEffect(() => {
+    setData(null);
+    setError(null);
+    setDrawerDate(null);
+    setForecastDate(null);
+    setEditingDate(null);
+    setTooltip(null);
     load();
+    return () => gridRequest.current?.abort();
   }, [load]);
 
   // Coordinates are still needed without a map: the conditions forecast reads
@@ -270,13 +296,21 @@ export default function Dashboard() {
   // landed. Polling stops as soon as the day is complete.
   useEffect(() => {
     let cancelled = false;
+    let wasCollecting = false;
 
     async function watch() {
       const state = await readHydration();
       if (cancelled) return;
       if (state && state.status === "collecting") {
+        wasCollecting = true;
         await load();
         if (cancelled) return;
+        pollTimer.current = setTimeout(watch, 20_000);
+      } else if (state?.status === "complete" && wasCollecting) {
+        // Forecasts are written at the end of the run. Fetch once more when
+        // completion arrives so the final stored evidence reaches the grid.
+        await load();
+      } else if (!state && wasCollecting) {
         pollTimer.current = setTimeout(watch, 20_000);
       }
     }
@@ -286,9 +320,7 @@ export default function Dashboard() {
       cancelled = true;
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-    // Deliberately keyed on the profile only: this is a background watch, not
-    // a per-render effect.
-  }, [profileId, readHydration, load]);
+  }, [profileId, readHydration, load, hydrationWatch]);
 
   async function refresh() {
     setRefreshing(true);
@@ -298,6 +330,7 @@ export default function Dashboard() {
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "Could not queue a refresh");
       setHydration(j as Hydration);
+      setHydrationWatch((value) => value + 1);
       setRefreshMsg(j.note ?? "Collecting rates in the background. The grid fills in as they arrive.");
       await load();
     } catch (e) {
@@ -372,7 +405,7 @@ export default function Dashboard() {
     );
   }
 
-  if (!data) {
+  if (!data || dataContext !== requestContext) {
     return (
       <Shell>
         <p className="pulsing mt-10 text-sm" style={{ color: "var(--text-muted)" }}>
@@ -420,7 +453,8 @@ export default function Dashboard() {
   const stats = {
     raise: rows.filter((r) => r.advice === "raise").length,
     high: rows.filter((r) => r.advice === "review_high").length,
-    hot: rows.filter((r) => (r.demand ?? 0) >= 40).length,
+    hot: rows.filter((r) => r.forecast != null && r.forecast.demandScore >= 65).length,
+    forecastCount: rows.filter((r) => r.forecast != null).length,
     parityCount: parityRows.length,
     parityAvg: parityRows.length
       ? parityRows.reduce((a, r) => a + (r.signals.parity?.undercut ?? 0), 0) / parityRows.length
@@ -432,6 +466,7 @@ export default function Dashboard() {
   };
   const maxWeekday = Math.max(1, ...weekdayAvg.map((w) => w.avgMedian ?? 0));
   const drawerRow = drawerDate ? rows.find((r) => r.date === drawerDate) ?? null : null;
+  const selectedForecast = forecastDate ? rows.find((r) => r.date === forecastDate)?.forecast : null;
 
   return (
     <Shell
@@ -447,7 +482,10 @@ export default function Dashboard() {
               {profiles.length > 1 ? (
                 <select
                   value={profileId ?? profiles[0]?.id}
-                  onChange={(e) => setProfileId(Number(e.target.value))}
+                  onChange={(e) => {
+                    setBaselineId(null);
+                    setProfileId(Number(e.target.value));
+                  }}
                   style={{
                     font: "600 20px var(--font-heading)",
                     background: "transparent",
@@ -532,12 +570,16 @@ export default function Dashboard() {
             disabled={refreshing || hydration?.status === "collecting"}
             className="btn-accent px-4 py-1.5 text-[13px]"
             title={
-              hydration?.status === "collecting"
+              hydration?.forecastPending
+                ? "Rate collection is finished; demand forecasts are being computed"
+                : hydration?.status === "collecting"
                 ? "Rates are being collected in the background"
                 : "Collect today's rates again"
             }
           >
-            {hydration?.status === "collecting"
+            {hydration?.forecastPending
+              ? "Computing demand forecasts"
+              : hydration?.status === "collecting"
               ? `Collecting ${hydration.cursor.toLocaleString()} / ${hydration.total.toLocaleString()}`
               : "Refresh rates"}
           </button>
@@ -570,7 +612,9 @@ export default function Dashboard() {
       {!hasAnyData && (
         <div className="card mt-6 p-5 text-sm">
           <div className="kicker mb-1.5">No rates yet</div>
-          {hydration?.status === "collecting"
+          {hydration?.forecastPending
+            ? "Rate collection has finished. Computing demand forecasts from the captured observations."
+            : hydration?.status === "collecting"
             ? `Collecting prices for the next ${profile.horizon_days} nights — ${hydration.percent}% done. They appear here as they land.`
             : `A background job collects prices for the next ${profile.horizon_days} nights every morning. Use Refresh rates to start one now.`}
         </div>
@@ -585,7 +629,7 @@ export default function Dashboard() {
           tone={stats.raise > 0 ? "var(--delta-good-text)" : undefined}
           hint="Nights where your rate sits below the market median"
         />
-        <Metric value={String(stats.hot)} label="high demand" hint="Nights ahead with unusual market strength" />
+        <Metric value={stats.forecastCount ? String(stats.hot) : "—"} label="high demand pressure" hint="Stored forecast scores of 65 or higher; 50 is neutral" />
         <Metric
           value={String(stats.high)}
           label="priced above a soft market"
@@ -652,7 +696,16 @@ export default function Dashboard() {
 
 
       {tab === "grid" && (
-        <div className="fade">
+        <div className="fade" id="rb-panel-grid" role="tabpanel" aria-labelledby="rb-tab-grid">
+          <p className="mt-4 text-xs" style={{ color: "var(--text-secondary)" }}>
+            Demand pressure: 50 is neutral, 65+ is higher, 35 or below is lower. Click a score for its evidence.
+            {" "}Forecast pricing recommendations are not enabled in this release.
+          </p>
+          {data.forecastStatus && (
+            <p className="mt-2 text-xs" role="status" style={{ color: "var(--text-secondary)" }}>
+              {data.forecastStatus}
+            </p>
+          )}
           <div
             className="card grid-scroll mt-4 overflow-hidden"
             data-scrolled={gridScrolled}
@@ -749,6 +802,7 @@ export default function Dashboard() {
                     onEditSave={() => saveMyRate(r.date)}
                     onEditCancel={() => setEditingDate(null)}
                     onOpen={() => setDrawerDate(r.date)}
+                    onForecastOpen={() => setForecastDate(r.date)}
                     onTooltip={setTooltip}
                   />
                 ))}
@@ -758,7 +812,9 @@ export default function Dashboard() {
 
           {hiddenRows > 0 && (
             <p className="mt-2 text-xs" style={{ color: "var(--text-muted)" }}>
-              {hydration?.status === "collecting"
+              {hydration?.forecastPending
+                ? `Computing demand forecasts. ${hiddenRows} further night${hiddenRows === 1 ? "" : "s"} have no prices to display yet.`
+                : hydration?.status === "collecting"
                 ? `${hiddenRows} further night${hiddenRows === 1 ? "" : "s"} are still being collected (${hydration.percent}% done) and appear as their prices arrive.`
                 : `${hiddenRows} further night${hiddenRows === 1 ? "" : "s"} have no prices yet, so they are hidden rather than shown empty.`}
             </p>
@@ -790,7 +846,7 @@ export default function Dashboard() {
       )}
 
       {tab === "home" && (
-        <div className="fade mt-4 flex flex-col gap-4">
+        <div className="fade mt-4 flex flex-col gap-4" id="rb-panel-home" role="tabpanel" aria-labelledby="rb-tab-home">
           {/* The two sections that lead somewhere. Everything below is a
               glance; these are the two places there is more to see, so they
               are the only ones that open. */}
@@ -836,7 +892,20 @@ export default function Dashboard() {
           own, not to whichever compset is on screen, so the panel carries its
           own focus picker over your own hotels. */}
       {tab === "reports" && (
-        <ReportsPanel profileId={profileId} hotels={baselines} />
+        <div id="rb-panel-reports" role="tabpanel" aria-labelledby="rb-tab-reports">
+          <ReportsPanel profileId={profileId} hotels={baselines} />
+        </div>
+      )}
+
+      {tab === "backtest" && (
+        <div id="rb-panel-backtest" role="tabpanel" aria-labelledby="rb-tab-backtest">
+          <ForecastBacktest
+            key={`${profile.id}:${data.activeBaselineId ?? ""}`}
+            profileId={profile.id}
+            baselineId={data.activeBaselineId}
+            hotelName={myHotel?.name ?? "This hotel"}
+          />
+        </div>
       )}
 
       {/* Tooltip layer */}
@@ -901,6 +970,13 @@ export default function Dashboard() {
           hotels={hotels}
           fmt={fmt}
           onClose={() => setDrawerDate(null)}
+        />
+      )}
+      {selectedForecast && (
+        <ForecastEvidence
+          forecast={selectedForecast}
+          hotelName={myHotel?.name ?? "This hotel"}
+          onClose={() => setForecastDate(null)}
         />
       )}
     </Shell>
@@ -1221,6 +1297,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const defs: [Tab, string][] = [
     ["home", "Home"],
     ["grid", "Rate grid"],
+    ["backtest", "Backtest"],
     ["reports", "Manager reports"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
@@ -1238,7 +1315,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
 
   return (
     <div
-      className="tabbar mt-6"
+      className="tabbar mt-6 overflow-x-auto"
       style={
         {
           borderBottom: "1px solid var(--border)",
@@ -1247,6 +1324,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
         } as React.CSSProperties
       }
       role="tablist"
+      aria-label="Dashboard views"
     >
       {defs.map(([t, label]) => (
         <button
@@ -1255,10 +1333,23 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
             refs.current[t] = el;
           }}
           role="tab"
+          id={`rb-tab-${t}`}
+          aria-controls={`rb-panel-${t}`}
           aria-selected={tab === t}
-          className="tab"
+          tabIndex={tab === t ? 0 : -1}
+          className="tab shrink-0 whitespace-nowrap"
           data-active={tab === t}
           onClick={() => onChange(t)}
+          onKeyDown={(event) => {
+            const index = defs.findIndex(([value]) => value === t);
+            const next = event.key === "ArrowRight" ? (index + 1) % defs.length
+              : event.key === "ArrowLeft" ? (index + defs.length - 1) % defs.length
+              : event.key === "Home" ? 0 : event.key === "End" ? defs.length - 1 : null;
+            if (next == null) return;
+            event.preventDefault();
+            onChange(defs[next][0]);
+            refs.current[defs[next][0]]?.focus();
+          }}
         >
           {label}
         </button>
@@ -1412,6 +1503,7 @@ function GridRowView({
   onEditCancel,
   onClearOverride,
   onOpen,
+  onForecastOpen,
   onTooltip,
   myHotelId,
 }: {
@@ -1426,6 +1518,7 @@ function GridRowView({
   onEditCancel: () => void;
   onClearOverride: () => void;
   onOpen: () => void;
+  onForecastOpen: () => void;
   onTooltip: (t: TooltipState | null) => void;
   myHotelId: string | null;
 }) {
@@ -1570,29 +1663,7 @@ function GridRowView({
       </td>
 
       <td className="px-3 py-1.5">
-        {row.demand != null ? (
-          <span className="inline-flex items-center gap-1.5">
-            <span className="w-6 text-right text-xs tabular-nums">{row.demand}</span>
-            <span
-              className="inline-block h-[7px] w-14 overflow-hidden"
-              style={{ background: "var(--gridline)" }}
-              role="img"
-              aria-label={`Demand ${row.demand} of 100`}
-            >
-              <span
-                className="block h-full"
-                style={{ width: `${row.demand}%`, background: "var(--series-1)" }}
-              />
-            </span>
-            {row.soldOutCount > 0 && (
-              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                {row.soldOutCount} full
-              </span>
-            )}
-          </span>
-        ) : (
-          <span style={{ color: "var(--text-muted)" }}>—</span>
-        )}
+        <DemandScoreButton forecast={row.forecast} date={row.date} onOpen={onForecastOpen} />
       </td>
 
       <td className="whitespace-nowrap px-3 py-1.5">
@@ -1947,7 +2018,7 @@ function RateLadder({
               You&apos;re <b>#{myRank + 1} of {priced.length}</b> priced hotels (most expensive first)
             </>
           )}
-          {row.demand != null && <> · demand {row.demand}/100</>}
+          {row.forecast != null && <> · demand pressure {row.forecast.demandScore}/100 ({row.forecast.confidenceLabel} confidence)</>}
         </span>
       </div>
 

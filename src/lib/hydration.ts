@@ -19,6 +19,7 @@ import { db } from "./db";
 import { buildJobs, processJobs, runEnrichment } from "./snapshot";
 import { todayISO } from "./dates";
 import { reportError } from "./errors";
+import { tickForecasts } from "./forecast-service";
 
 export interface HydrationState {
   runDate: string;
@@ -28,6 +29,8 @@ export interface HydrationState {
   startedAt: string | null;
   lastTickAt: string | null;
   finishedAt: string | null;
+  /** Rates are finished; the resumable forecast stage is still working. */
+  forecastPending: boolean;
   errors: string[];
   /** 0–100, for a progress bar that does not lie when total is unknown. */
   percent: number;
@@ -43,9 +46,11 @@ interface RunRow {
   started_at: string | null;
   last_tick_at: string | null;
   finished_at: string | null;
+  forecast_cursor: number;
+  forecast_finished_at: string | null;
 }
 
-const COLUMNS = "run_date, cursor, total, rows_written, errors, started_at, last_tick_at, finished_at";
+const COLUMNS = "run_date, cursor, total, rows_written, errors, started_at, last_tick_at, finished_at, forecast_cursor, forecast_finished_at";
 
 function toState(row: RunRow | null): HydrationState {
   if (!row) {
@@ -57,6 +62,7 @@ function toState(row: RunRow | null): HydrationState {
       startedAt: null,
       lastTickAt: null,
       finishedAt: null,
+      forecastPending: false,
       errors: [],
       percent: 0,
       status: "idle",
@@ -70,20 +76,22 @@ function toState(row: RunRow | null): HydrationState {
     rowsWritten: row.rows_written,
     startedAt: row.started_at,
     lastTickAt: row.last_tick_at,
-    finishedAt: row.finished_at,
+    finishedAt: row.forecast_finished_at,
+    forecastPending: Boolean(row.finished_at && !row.forecast_finished_at),
     errors: row.errors ?? [],
     percent: row.finished_at ? 100 : percent,
-    status: row.finished_at ? "complete" : "collecting",
+    status: row.finished_at && row.forecast_finished_at ? "complete" : "collecting",
   };
 }
 
 /** Today's collection, as far as it has got. Cheap enough to poll. */
 export async function hydrationState(supa: SupabaseClient = db()): Promise<HydrationState> {
-  const { data } = await supa
+  const { data, error } = await supa
     .from("collection_runs")
     .select(COLUMNS)
     .eq("run_date", todayISO())
     .maybeSingle<RunRow>();
+  if (error) throw new Error(`Could not read collection progress: ${error.message}`);
   return toState(data ?? null);
 }
 
@@ -96,7 +104,7 @@ export async function hydrationState(supa: SupabaseClient = db()): Promise<Hydra
  */
 export async function queueHydration(supa: SupabaseClient = db()): Promise<HydrationState> {
   const now = new Date().toISOString();
-  await supa.from("collection_runs").upsert(
+  const { error } = await supa.from("collection_runs").upsert(
     {
       run_date: todayISO(),
       cursor: 0,
@@ -104,9 +112,12 @@ export async function queueHydration(supa: SupabaseClient = db()): Promise<Hydra
       errors: [],
       started_at: now,
       finished_at: null,
+      forecast_cursor: 0,
+      forecast_finished_at: null,
     },
     { onConflict: "run_date" }
   );
+  if (error) throw new Error(`Could not queue collection: ${error.message}`);
   return hydrationState(supa);
 }
 
@@ -121,19 +132,22 @@ export async function tickHydration(
 ): Promise<HydrationState & { didWork: boolean }> {
   const supa = db();
   const runDate = todayISO();
+  const deadline = Date.now() + budgetMs;
 
-  const { data: existing } = await supa
+  const { data: existing, error: stateError } = await supa
     .from("collection_runs")
     .select(COLUMNS)
     .eq("run_date", runDate)
     .maybeSingle<RunRow>();
+  if (stateError) throw new Error(`Could not read collection progress: ${stateError.message}`);
 
   if (existing?.finished_at) {
-    return { ...toState(existing), didWork: false };
+    if (existing.forecast_finished_at) return { ...toState(existing), didWork: false };
+    return finishForecastStage(supa, existing, deadline);
   }
 
   const plan = await buildJobs(supa);
-  if (plan.note || plan.jobs.length === 0) {
+  if (plan.jobs.length === 0) {
     const now = new Date().toISOString();
     const row = {
       run_date: runDate,
@@ -144,6 +158,8 @@ export async function tickHydration(
       started_at: existing?.started_at ?? now,
       last_tick_at: now,
       finished_at: now,
+      forecast_cursor: 0,
+      forecast_finished_at: now,
     };
     await supa.from("collection_runs").upsert(row, { onConflict: "run_date" });
     return { ...toState(row as RunRow), didWork: false };
@@ -151,7 +167,8 @@ export async function tickHydration(
 
   const cursor = existing?.cursor ?? 0;
   const slice = plan.jobs.slice(cursor);
-  const r = await processJobs(supa, slice, { budgetMs });
+  // Reserve headroom for the state write and the first forecast slice.
+  const r = await processJobs(supa, slice, { budgetMs: Math.max(1, deadline - Date.now() - 12_000) });
 
   const nextCursor = cursor + r.done;
   const complete = nextCursor >= plan.jobs.length;
@@ -163,16 +180,7 @@ export async function tickHydration(
   }
   if (plan.note) await reportError("collection", plan.note, {}, supa);
 
-  // Enrichment (events, review scores) is only worth running once the day's
-  // rates are in, so it rides on the tick that finishes the run.
   const errors = [...(existing?.errors ?? []), ...r.errors];
-  if (complete) {
-    errors.push(...(await runEnrichment(supa, plan.profiles)));
-    // With the day's prices in, judge them against each hotel's own recent
-    // level so a spike is marked before anyone reads the grid.
-    const { error: flagError } = await supa.rpc("flag_rate_anomalies", { for_day: runDate });
-    if (flagError) errors.push(`anomaly flagging: ${flagError.message}`);
-  }
 
   const now = new Date().toISOString();
   const row: RunRow = {
@@ -186,10 +194,55 @@ export async function tickHydration(
     started_at: existing?.started_at ?? now,
     last_tick_at: now,
     finished_at: complete ? now : null,
+    forecast_cursor: existing?.forecast_cursor ?? 0,
+    forecast_finished_at: null,
   };
-  await supa.from("collection_runs").upsert(row, { onConflict: "run_date" });
+  const { error: saveError } = await supa.from("collection_runs").upsert(row, { onConflict: "run_date" });
+  if (saveError) throw new Error(`Could not save collection progress: ${saveError.message}`);
 
+  if (complete) {
+    // Persist rate completion BEFORE forecasts/enrichment. A timeout in either
+    // stage no longer discards the completed rate cursor or repeats collection.
+    const state = await finishForecastStage(supa, row, deadline);
+    if (Date.now() < deadline - 5_000) {
+      const enrichErrors = await runEnrichment(supa, plan.profiles);
+      if (enrichErrors.length) {
+        state.errors = [...state.errors, ...enrichErrors].slice(0, 10);
+        await supa.from("collection_runs").update({ errors: state.errors }).eq("run_date", runDate);
+      }
+    }
+    return { ...state, didWork: r.done > 0 || state.didWork };
+  }
   return { ...toState(row), didWork: r.done > 0 };
+}
+
+async function finishForecastStage(
+  supa: SupabaseClient, row: RunRow, deadline: number
+): Promise<HydrationState & { didWork: boolean }> {
+  if (Date.now() >= deadline) return { ...toState(row), didWork: false };
+  try {
+    // Do not save a forecast before the collector has judged today's outliers.
+    // On a retry this operation is deterministic and safe to repeat.
+    const { error: flagError } = await supa.rpc("flag_rate_anomalies", { for_day: row.run_date });
+    if (flagError) throw new Error(`Anomaly flagging: ${flagError.message}`);
+    const progress = await tickForecasts(supa, row.run_date, row.forecast_cursor ?? 0, deadline);
+    const errors = (row.errors ?? []).filter((error) => !error.startsWith("forecast: "));
+    const { error: saveError } = await supa.from("collection_runs").update({
+      forecast_cursor: progress.cursor,
+      forecast_finished_at: progress.complete ? new Date().toISOString() : null,
+      last_tick_at: new Date().toISOString(), errors,
+    }).eq("run_date", row.run_date);
+    if (saveError) throw new Error(`Could not save forecast completion: ${saveError.message}`);
+    return { ...(await hydrationState(supa)), didWork: progress.cursor > (row.forecast_cursor ?? 0) };
+  } catch (error) {
+    // Keep the per-hotel checkpoints already saved by tickForecasts. The next
+    // scheduled call resumes from them; failure is never marked complete.
+    const message = `forecast: ${error instanceof Error ? error.message : String(error)}`;
+    const errors = [message, ...(row.errors ?? []).filter((item) => !item.startsWith("forecast: "))].slice(0, 10);
+    const { error: saveError } = await supa.from("collection_runs").update({ errors }).eq("run_date", row.run_date);
+    if (saveError) throw new Error(`Could not record forecast failure: ${saveError.message}`);
+    return { ...(await hydrationState(supa)), didWork: false };
+  }
 }
 
 /**
