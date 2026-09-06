@@ -17,6 +17,7 @@ const ROOT = "src/app/api";
 // client scoped to an account, or from a job that legitimately spans tenants.
 const TENANT_TABLES = [
   "profiles",
+  "demand_forecasts",
   "profile_hotels",
   "baseline_comps",
   "my_rates",

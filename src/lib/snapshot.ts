@@ -187,6 +187,7 @@ export async function processJobs(
             hotel_id: hotel.hotel_id,
             check_in: checkIn,
             captured_on: todayISO(),
+            captured_at: new Date().toISOString(),
             price: r.price,
             price_low: r.priceLow,
             rate_source: r.source ? `${r.source}${r.direct ? " (direct)" : ""}` : null,

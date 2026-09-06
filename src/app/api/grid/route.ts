@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireAccount, SESSION_COOKIE } from "@/lib/auth";
 import { addDaysISO, dateRange, todayISO, weekdayOf } from "@/lib/dates";
-import { adviceFor, demandScore, median, positionOf } from "@/lib/insights";
+import { adviceFor, median, positionOf } from "@/lib/insights";
+import { forecastCompIds, forecastContextKey } from "@/lib/forecast-market";
+import { readStoredForecasts, FORECAST_HORIZON } from "@/lib/forecast-storage";
 import { getHolidays, getWeather } from "@/lib/signals";
 import type {
   Baseline,
@@ -29,24 +31,6 @@ interface SnapshotRow {
   offers: Quote[] | null;
   available: boolean;
   captured_at?: string;
-}
-
-function locationOf(hotelId: string): string {
-  return hotelId.split("-")[0];
-}
-
-function kmBetween(
-  a: { latitude: number | null; longitude: number | null },
-  b: { latitude: number | null; longitude: number | null }
-): number {
-  const R = 6371;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad((b.latitude as number) - (a.latitude as number));
-  const dLon = toRad((b.longitude as number) - (a.longitude as number));
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(a.latitude as number)) * Math.cos(toRad(b.latitude as number)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
 }
 
 export async function GET(req: NextRequest) {
@@ -157,20 +141,8 @@ async function buildGrid(
   // inside the profile's radius. Destin under Pensacola was moving the median
   // with hotels forty-five miles away; a hotel that cannot be placed yet is
   // kept, because absence of a coordinate is not evidence it is far.
-  const baselineHotel = activeBaselineId ? byIdAll.get(activeBaselineId) : undefined;
-  const radiusKm = (profile.compset_radius_miles ?? 15) * 1.609344;
-  const compIds = (activeBaselineId ? (compsByBaseline.get(activeBaselineId) ?? []) : []).filter((id) => {
-    const comp = byIdAll.get(id);
-    if (!comp || !baselineHotel) return false;
-    if (locationOf(id) !== locationOf(activeBaselineId as string)) return false;
-    if (
-      comp.latitude != null && comp.longitude != null &&
-      baselineHotel.latitude != null && baselineHotel.longitude != null
-    ) {
-      return kmBetween(baselineHotel, comp) <= radiusKm;
-    }
-    return true;
-  });
+  const compIds = activeBaselineId ? forecastCompIds(activeBaselineId,
+    compsByBaseline.get(activeBaselineId) ?? [], allTracked, profile.compset_radius_miles ?? 15) : [];
   const compIdSet = new Set(compIds);
   const compsAreDiscovered = compIds.length > 0;
 
@@ -220,10 +192,23 @@ async function buildGrid(
     supa
       .from("rate_snapshots")
       .select("captured_at")
+      .in("hotel_id", hotelIds)
+      .eq("currency", profile.currency)
+      .gte("check_in", today)
+      .lt("check_in", addDaysISO(today, FORECAST_HORIZON))
       .order("captured_at", { ascending: false })
       .limit(1),
   ]);
 
+  const stored = activeBaselineId ? await readStoredForecasts(supa, profile.id,
+    activeBaselineId, today, addDaysISO(today, FORECAST_HORIZON - 1),
+    forecastContextKey(activeBaselineId, compIds, profile.currency)) : { forecasts: [], status: null };
+  const newestCapture = lastCapRes.data?.[0]?.captured_at ?? null;
+  const freshForecasts = stored.forecasts.filter((f) => !newestCapture || f.computed_at >= newestCapture);
+  const forecastByDate = new Map(freshForecasts.map((f) => [f.check_in, f.forecast]));
+  const forecastStatus = stored.forecasts.length > freshForecasts.length
+    ? "Rates have changed since these forecasts were computed. Forecasts will update after collection completes."
+    : stored.status;
 
   // External demand signals (all best-effort).
   const horizonYears = [...new Set([today, horizonEnd].map((d) => Number(d.slice(0, 4))))];
@@ -367,7 +352,8 @@ async function buildGrid(
     const myPrice = manual ?? live;
     const myPriceSource = manual != null ? "manual" : live != null ? "live" : null;
 
-    const demand = demandScore(soldOutCount, comps.length, momentumPct);
+    const forecast = forecastByDate.get(date) ?? null;
+    const demand = forecast?.demandScore ?? null;
     const position = positionOf(myPrice, mkt);
 
     // Booking pace: sold-out comps now vs the oldest capture in the window,
@@ -427,9 +413,11 @@ async function buildGrid(
       anomalyMarketWide,
       soldOutCount,
       demand,
-      momentumPct,
+      forecast,
+      momentumPct: forecast?.evidence.movement.fraction != null
+        ? forecast.evidence.movement.fraction * 100 : momentumPct,
       position,
-      advice: adviceFor(position, demand),
+      advice: adviceFor(position, demand, "forecast"),
       signals,
     };
   });
@@ -467,6 +455,7 @@ async function buildGrid(
 
   const payload: GridResponse & { configured: boolean } = {
     configured: true,
+    forecastStatus,
     profile,
     baselines,
     activeBaselineId,

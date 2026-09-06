@@ -1,3 +1,5 @@
+import type { DemandForecast } from "./forecast";
+
 export interface Profile {
   id: number;
   name: string;
@@ -98,6 +100,8 @@ export interface GridRow {
   /** True when most of the market is flagged — a real event, so nothing was excluded. */
   anomalyMarketWide: boolean;
   demand: number | null; // 0..100
+  /** Exact persisted engine output; null until this market's collection completes. */
+  forecast?: DemandForecast | null;
   momentumPct: number | null; // % change of market median vs ~7 days ago
   position: Position;
   advice: Advice;
@@ -105,6 +109,7 @@ export interface GridRow {
 }
 
 export interface GridResponse {
+  forecastStatus?: string | null;
   profile: Profile;
   baselines: Baseline[];
   activeBaselineId: string | null;

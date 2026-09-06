@@ -34,11 +34,12 @@ export function demandScore(
 
 export function adviceFor(
   position: Position,
-  demand: number | null
+  demand: number | null,
+  scale: "legacy" | "forecast" = "legacy"
 ): Advice {
   if (position == null) return null;
-  const hot = demand != null && demand >= 40;
-  const cold = demand != null && demand < 15;
+  const hot = demand != null && demand >= (scale === "forecast" ? 65 : 40);
+  const cold = demand != null && (scale === "forecast" ? demand <= 35 : demand < 15);
   // Priced at/below market on a high-demand night → room to raise.
   if (hot && (position === "well_below" || position === "below" || position === "in_line")) {
     return "raise";

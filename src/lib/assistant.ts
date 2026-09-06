@@ -26,6 +26,9 @@ import { anchorForProfile, searchNearby, DEFAULT_RADIUS_MILES } from "./compset"
 import { verifyHotelKey } from "./xotelo";
 import { airportTraffic, nearestAirport, trendOf } from "./flights";
 import { getHolidays, getWeather } from "./signals";
+import { loadForecastMarkets } from "./forecast-service";
+import { readStoredForecasts } from "./forecast-storage";
+import { addDaysISO, todayISO } from "./dates";
 
 export interface AssistantTurn {
   role: "user" | "model";
@@ -52,6 +55,7 @@ const SYSTEM = `You are the assistant inside Rate Beacon, a rate-intelligence da
 How you answer:
 - Every number you state must come from a tool result in this conversation. Never estimate, never recall a figure from training, never fill a gap with a plausible value. If a tool did not return it, say you do not have it.
 - Call tools before answering questions about rates, reports, competitors, weather or demand. Do not answer from memory.
+- For demand scores, future market forecasts and their reasons, call demand_forecast. State its confidence label and limitations. A neutral demand score is 50. The forecast is experimental and pricingEnabled is false: do not recommend a selling price or interpret a market interval as one. Weather, holidays and observed airport flights are context only, not inputs to this release's demand score. Airport counts describe past flights, never future bookings.
 - Be brief and concrete. A revenue manager wants "You are $12 under the market for Friday, and the market rose 8% this week", not a paragraph of hedging.
 - Money in the property's own currency, to the nearest dollar. Percentages to the nearest whole number.
 - When something looks wrong in the data — a flagged outlier, a hotel with no rates — say so plainly rather than working around it.
@@ -59,6 +63,16 @@ How you answer:
 - If asked something the product does not know (guest reviews, booking pace from a PMS, next year's events), say it is not something Rate Beacon collects.`;
 
 const TOOLS: FunctionDeclaration[] = [
+  {
+    name: "demand_forecast",
+    description: "Read the stored deterministic demand forecast and exact supporting evidence for the active hotel. Use for why a date has demand pressure, confidence, market forecasts, and what competitors changed. Pricing recommendations are not enabled.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        date: { type: Type.STRING, description: "A future check-in date YYYY-MM-DD, within the next 45 nights. Omit for the next seven nights." },
+      },
+    },
+  },
   {
     name: "market_summary",
     description:
@@ -189,6 +203,8 @@ async function runTool(
   const nights = Math.min(60, Math.max(1, Number(args.nights) || 14));
 
   switch (name) {
+    case "demand_forecast":
+      return demandForecastSummary(ctx, typeof args.date === "string" ? args.date : null);
     case "market_summary":
       return marketSummary(ctx, nights);
     case "report_summary":
@@ -202,6 +218,48 @@ async function runTool(
     default:
       return { error: `No tool called ${name}.` };
   }
+}
+
+async function demandForecastSummary(ctx: AssistantContext, requestedDate: string | null) {
+  const today = todayISO();
+  const lastDate = addDaysISO(today, 44);
+  if (requestedDate && (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate) || requestedDate < today || requestedDate > lastDate)) {
+    return { note: "Choose a date in the next 45 nights. Historical validation is available in the Backtest tab." };
+  }
+  // The assistant route already checked ownership; retain the explicit profile
+  // restriction as well as the account-scoped database client.
+  const { data: profile, error } = await ctx.supa.from("profiles")
+    .select("id,currency,horizon_days,compset_radius_miles").eq("id", ctx.profileId)
+    .maybeSingle<{ id: number; currency: string; horizon_days: number; compset_radius_miles: number }>();
+  if (error || !profile) return { note: "The forecast profile could not be read." };
+  const markets = await loadForecastMarkets(ctx.supa, profile);
+  const market = ctx.baselineHotelId ? markets.find((m) => m.hotelId === ctx.baselineHotelId) : markets[0];
+  if (!market) return { note: "Choose a hotel belonging to this profile." };
+  const stored = await readStoredForecasts(ctx.supa, profile.id, market.hotelId, today, lastDate, market.contextKey);
+  if (stored.status) return { note: stored.status };
+  const { data: latest } = await ctx.supa.from("rate_snapshots")
+    .select("captured_at").in("hotel_id", [market.hotelId, ...market.compHotelIds])
+    .eq("currency", market.currency).gte("check_in", today).lte("check_in", lastDate)
+    .order("captured_at", { ascending: false }).limit(1);
+  const forecasts = stored.forecasts.filter((row) => !latest?.[0]?.captured_at || row.computed_at >= latest[0].captured_at)
+    .filter((row) => !requestedDate || row.check_in === requestedDate).slice(0, requestedDate ? 1 : 7)
+    .map(({ forecast, computed_at }) => ({
+      computedAt: computed_at, version: forecast.version, hotelId: forecast.hotelId,
+      checkIn: forecast.checkIn, asOf: forecast.asOf, currency: forecast.currency,
+      demandScore: forecast.demandScore, confidenceLabel: forecast.confidenceLabel,
+      confidenceReasons: forecast.confidenceReasons, signals: forecast.signals,
+      currentMarketMedian: forecast.currentMarketMedian, forecastMedian: forecast.forecastMedian,
+      marketLow: forecast.marketLow, marketHigh: forecast.marketHigh,
+      normalRate: forecast.normalRate, hotelPositionRatio: forecast.hotelPositionRatio,
+      pricingEnabled: false,
+      // Keep the initial assistant context small while retaining actual quote
+      // rows and paired changes. Full training samples are in the Why drawer.
+      evidence: {
+        competitors: forecast.evidence.competitors, movement: forecast.evidence.movement,
+        historyDays: forecast.evidence.historyDays, limitations: forecast.evidence.limitations,
+      },
+    }));
+  return { forecasts, note: forecasts.length ? "Experimental market forecasts; no selling-price recommendation is enabled." : "Fresh forecast data is not available for that date yet." };
 }
 
 async function marketSummary(ctx: AssistantContext, nights: number) {
