@@ -17,7 +17,8 @@ import CompsetPicker from "@/components/CompsetPicker";
 import Assistant from "@/components/Assistant";
 import TravelTrend from "@/components/TravelTrend";
 import ForecastEvidence, { DemandScoreButton } from "@/components/ForecastEvidence";
-import ForecastBacktest from "@/components/ForecastBacktest";
+import DemandForecast from "@/components/DemandForecast";
+import { DEMAND_HIGH, DEMAND_LOW, DEMAND_NEUTRAL } from "@/lib/demand";
 
 type GridPayload = (GridResponse & { configured: true }) | { configured: false };
 
@@ -97,16 +98,16 @@ interface TooltipState {
   lines: string[];
 }
 
-// The overview, rate grid, forecast backtest and manager reports.
+// The overview, rate grid, demand forecast and manager reports.
 // Trends, the ladder and conditions used to be tabs of their own;
 // they are sections of the overview now, because they are things you glance at
 // on the way to a decision rather than destinations.
-type Tab = "home" | "grid" | "backtest" | "reports";
+type Tab = "home" | "grid" | "forecast" | "reports";
 
 const TAB_STORAGE_KEY = "rb-tab";
 
 function isTab(v: string | null): v is Tab {
-  return v === "home" || v === "grid" || v === "backtest" || v === "reports";
+  return v === "home" || v === "grid" || v === "forecast" || v === "reports";
 }
 type Theme = "light" | "dark";
 
@@ -160,7 +161,9 @@ export default function Dashboard() {
     if (saved === "light" || saved === "dark") setTheme(saved);
     try {
       const savedTab = localStorage.getItem(TAB_STORAGE_KEY);
-      if (isTab(savedTab)) setTabState(savedTab);
+      // "backtest" was this tab's key before it became the user-facing Demand Forecast page.
+      const migratedTab = savedTab === "backtest" ? "forecast" : savedTab;
+      if (isTab(migratedTab)) setTabState(migratedTab);
     } catch {
       // Storage denied; the default tab stands.
     }
@@ -453,7 +456,7 @@ export default function Dashboard() {
   const stats = {
     raise: rows.filter((r) => r.advice === "raise").length,
     high: rows.filter((r) => r.advice === "review_high").length,
-    hot: rows.filter((r) => r.forecast != null && r.forecast.demandScore >= 65).length,
+    hot: rows.filter((r) => r.forecast != null && r.forecast.demandScore >= DEMAND_HIGH).length,
     forecastCount: rows.filter((r) => r.forecast != null).length,
     parityCount: parityRows.length,
     parityAvg: parityRows.length
@@ -629,7 +632,7 @@ export default function Dashboard() {
           tone={stats.raise > 0 ? "var(--delta-good-text)" : undefined}
           hint="Nights where your rate sits below the market median"
         />
-        <Metric value={stats.forecastCount ? String(stats.hot) : "—"} label="high demand pressure" hint="Stored forecast scores of 65 or higher; 50 is neutral" />
+        <Metric value={stats.forecastCount ? String(stats.hot) : "—"} label="high demand pressure" hint={`Stored forecast scores of ${DEMAND_HIGH} or higher; ${DEMAND_NEUTRAL} is neutral`} />
         <Metric
           value={String(stats.high)}
           label="priced above a soft market"
@@ -698,8 +701,7 @@ export default function Dashboard() {
       {tab === "grid" && (
         <div className="fade" id="rb-panel-grid" role="tabpanel" aria-labelledby="rb-tab-grid">
           <p className="mt-4 text-xs" style={{ color: "var(--text-secondary)" }}>
-            Demand pressure: 50 is neutral, 65+ is higher, 35 or below is lower. Click a score for its evidence.
-            {" "}Forecast pricing recommendations are not enabled in this release.
+            Demand pressure: {DEMAND_NEUTRAL} is neutral, {DEMAND_HIGH}+ is higher, {DEMAND_LOW} or below is lower. Click a score for its evidence, or open the Demand Forecast tab for the full pricing picture.
           </p>
           {data.forecastStatus && (
             <p className="mt-2 text-xs" role="status" style={{ color: "var(--text-secondary)" }}>
@@ -897,13 +899,16 @@ export default function Dashboard() {
         </div>
       )}
 
-      {tab === "backtest" && (
-        <div id="rb-panel-backtest" role="tabpanel" aria-labelledby="rb-tab-backtest">
-          <ForecastBacktest
+      {tab === "forecast" && (
+        <div id="rb-panel-forecast" role="tabpanel" aria-labelledby="rb-tab-forecast">
+          <DemandForecast
             key={`${profile.id}:${data.activeBaselineId ?? ""}`}
+            rows={rows}
+            currency={profile.currency}
             profileId={profile.id}
             baselineId={data.activeBaselineId}
             hotelName={myHotel?.name ?? "This hotel"}
+            onOpenEvidence={setForecastDate}
           />
         </div>
       )}
@@ -1297,7 +1302,7 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const defs: [Tab, string][] = [
     ["home", "Home"],
     ["grid", "Rate grid"],
-    ["backtest", "Backtest"],
+    ["forecast", "Demand Forecast"],
     ["reports", "Manager reports"],
   ];
   const refs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
@@ -1458,7 +1463,7 @@ function Mark() {
   );
 }
 
-function Metric({
+export function Metric({
   value,
   label,
   tone,
