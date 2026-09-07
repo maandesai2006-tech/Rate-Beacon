@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useState } from "react";
 import type { BacktestResult } from "@/lib/forecast";
+import { moneyFormatter, percentFormatter } from "@/lib/format";
 
 type LoadState =
   | { status: "loading"; context: string }
@@ -44,24 +45,21 @@ export default function ForecastBacktest({ profileId, baselineId, hotelName }: {
   }, [profileId, baselineId, context, retry]);
 
   const result = state.context === context && state.status === "ready" ? state.result : null;
-  const moneyFormat = useMemo(() => new Intl.NumberFormat("en-US", { style: "currency", currency: result?.currency ?? "USD", maximumFractionDigits: 2 }), [result?.currency]);
-  const money = (value: number | null) => value == null ? "—" : moneyFormat.format(value);
-  const percent = (value: number | null) => value == null ? "—" : new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(value);
+  const money = useMemo(() => moneyFormatter(result?.currency ?? "USD"), [result?.currency]);
+  const percent = percentFormatter(1);
   const selected = result?.byLeadTime.filter((row) => leadTime === "all" || String(row.leadTime) === leadTime) ?? [];
   const points = result?.points.filter((point) => leadTime === "all" || String(point.leadTime) === leadTime) ?? [];
   const smallSamples = selected.filter((row) => row.samples > 0 && row.samples < 30);
 
   return (
-    <section className="card fade mt-4 p-4 sm:p-5" aria-labelledby="forecast-backtest-title">
+    <section className="card fade p-4 sm:p-5" aria-labelledby="forecast-backtest-title">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="kicker mb-1">Forecast validation · experimental</p>
-          <h2 id="forecast-backtest-title" className="text-xl">How did the forecast compare with the market?</h2>
-          <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>{hotelName} · past check-in dates reconstructed from the captures available at each forecast cutoff.</p>
+          <h2 id="forecast-backtest-title" className="text-lg">How did the forecast compare with the market?</h2>
+          <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>{hotelName} · past check-in dates reconstructed from the captures available at each forecast cutoff. Each forecast uses only captures on or before its cutoff; the comparison is the final observed competitor median, not this hotel&apos;s achieved rate or occupancy.</p>
         </div>
         <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={() => setRetry((value) => value + 1)} disabled={!baselineId || state.status === "loading"}>Refresh backtest</button>
       </div>
-      <p className="mt-3 max-w-4xl text-xs" style={{ color: "var(--text-secondary)" }}>Each forecast uses only captures on or before its cutoff. The comparison is the final observed competitor median, not your hotel&apos;s achieved rate or occupancy. The carry-forward baseline keeps the market median at the cutoff unchanged.</p>
 
       {!baselineId ? (
         <p className="mt-5 text-sm" role="status">Choose a baseline hotel to evaluate its market forecast.</p>
@@ -109,7 +107,7 @@ export default function ForecastBacktest({ profileId, baselineId, hotelName }: {
                   <th scope="col" className="p-3">Forecast MAE</th>
                   <th scope="col" className="p-3">Carry-forward MAE</th>
                   <th scope="col" className="p-3">Market band coverage</th>
-                  <th scope="col" className="p-3">Hotel candidate range coverage <span className="block font-normal">Experimental · not a recommendation</span></th>
+                  <th scope="col" className="p-3">Suggested-range coverage <span className="block font-normal">See Demand Forecast overview</span></th>
                   <th scope="col" className="p-3">Unavailable-share MAE</th>
                 </tr></thead>
                 <tbody>{selected.map((row) => <tr key={row.leadTime} style={{ borderBottom: "1px solid var(--gridline)" }}>
@@ -124,7 +122,7 @@ export default function ForecastBacktest({ profileId, baselineId, hotelName }: {
               </table>
             </div>
           )}
-          <p className="mt-3 max-w-4xl text-xs" style={{ color: "var(--text-secondary)" }}>MAE is mean absolute error in {result.currency}; lower means closer to the final observed market median. Market band coverage counts final medians inside the market dispersion band. Hotel candidate coverage compares that same market median against an experimental hotel-specific interval; it does not validate a hotel selling price. Coverage is observed frequency, not confidence. “pp” means percentage points; “—” means no eligible measurements.</p>
+          <p className="mt-3 max-w-4xl text-xs" style={{ color: "var(--text-secondary)" }}>MAE is mean absolute error in {result.currency}; lower means closer to the final observed market median. Market band coverage counts final medians inside the market dispersion band. Suggested-range coverage checks that same market median against the hotel-specific range shown on the Demand Forecast overview; it does not validate a hotel selling price, only how often the market landed inside it. Coverage is observed frequency, not confidence. “pp” means percentage points; “—” means no eligible measurements.</p>
 
           {result.points.length > 0 && points.length === 0 && <p className="mt-5 text-sm" role="status">No eligible observations at this lead time yet.</p>}
           {points.length > 0 && (
@@ -170,7 +168,7 @@ function ForecastScatter({ points, currency }: { points: BacktestResult["points"
   const x = (value: number) => 90 + value / maximum * 490;
   const y = (value: number) => 340 - value / maximum * 300;
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) => maximum * fraction);
-  const format = new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 });
+  const format = moneyFormatter(currency, 0);
 
   return (
     <figure className="mt-5 max-w-3xl" aria-labelledby={`${chartId}-title`}>
@@ -180,12 +178,12 @@ function ForecastScatter({ points, currency }: { points: BacktestResult["points"
         {ticks.map((tick, index) => <g key={index}>
           <line x1="90" y1={y(tick)} x2="580" y2={y(tick)} stroke="var(--gridline)" />
           <line x1={x(tick)} y1="40" x2={x(tick)} y2="340" stroke="var(--gridline)" />
-          <text x="80" y={y(tick) + 4} textAnchor="end" fill="var(--text-secondary)" fontSize="11">{format.format(tick)}</text>
-          <text x={x(tick)} y="360" textAnchor="middle" fill="var(--text-secondary)" fontSize="11">{format.format(tick)}</text>
+          <text x="80" y={y(tick) + 4} textAnchor="end" fill="var(--text-secondary)" fontSize="11">{format(tick)}</text>
+          <text x={x(tick)} y="360" textAnchor="middle" fill="var(--text-secondary)" fontSize="11">{format(tick)}</text>
         </g>)}
         <line x1="90" y1="340" x2="580" y2="40" stroke="var(--text-muted)" strokeDasharray="5 4" />
         {points.map((point) => <circle key={`${point.cutoff}:${point.checkIn}:${point.leadTime}`} cx={x(point.predictedMedian)} cy={y(point.actualMedian)} r="4" fill="var(--series-1)" opacity="0.65">
-          <title>{point.checkIn}, {point.leadTime} nights out: predicted {format.format(point.predictedMedian)}, actual {format.format(point.actualMedian)}</title>
+          <title>{point.checkIn}, {point.leadTime} nights out: predicted {format(point.predictedMedian)}, actual {format(point.actualMedian)}</title>
         </circle>)}
         <text x="335" y="392" textAnchor="middle" fill="var(--text-secondary)" fontSize="12">Predicted market median ({currency})</text>
         <text x="17" y="190" transform="rotate(-90 17 190)" textAnchor="middle" fill="var(--text-secondary)" fontSize="12">Actual market median ({currency})</text>

@@ -2,16 +2,9 @@
 
 import { useEffect, useId, useRef } from "react";
 import type { DemandForecast } from "@/lib/forecast";
-
-function dateLabel(date: string) {
-  return new Date(`${date}T00:00:00Z`).toLocaleDateString("en-US", {
-    weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
-  });
-}
-
-function pressureLabel(score: number) {
-  return score >= 65 ? "Higher pressure" : score <= 35 ? "Lower pressure" : "Near neutral";
-}
+import { dateLabel, moneyFormatter, percentFormatter } from "@/lib/format";
+import { demandPressureLabel } from "@/lib/demand";
+import { pricingHeadroom } from "@/lib/forecast-headroom";
 
 export function DemandScoreButton({ forecast, date, onOpen }: {
   forecast?: DemandForecast | null;
@@ -30,7 +23,7 @@ export function DemandScoreButton({ forecast, date, onOpen }: {
       className="btn-ghost flex-col items-start gap-1 px-2 py-1 text-xs"
       onClick={onOpen}
       aria-haspopup="dialog"
-      aria-label={`Why? Demand pressure ${forecast.demandScore} of 100 for ${dateLabel(date)}. ${pressureLabel(forecast.demandScore)}. ${forecast.confidenceLabel} confidence.`}
+      aria-label={`Why? Demand pressure ${forecast.demandScore} of 100 for ${dateLabel(date)}. ${demandPressureLabel(forecast.demandScore)}. ${forecast.confidenceLabel} confidence.`}
     >
       <span className="inline-flex items-center gap-2">
         <span className="min-w-7 text-right tabular-nums">{forecast.demandScore}</span>
@@ -60,9 +53,11 @@ export default function ForecastEvidence({ forecast, hotelName, onClose }: {
   const titleId = useId();
   const descriptionId = useId();
   const { evidence } = forecast;
-  const moneyFormat = new Intl.NumberFormat("en-US", { style: "currency", currency: forecast.currency, maximumFractionDigits: 2 });
-  const money = (value: number | null) => value == null ? "Not available" : moneyFormat.format(value);
-  const percent = (value: number | null) => value == null ? "Not available" : new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 2 }).format(value);
+  const moneyFmt = moneyFormatter(forecast.currency);
+  const percentFmt = percentFormatter(2);
+  const money = (value: number | null) => value == null ? "Not available" : moneyFmt(value);
+  const percent = (value: number | null) => value == null ? "Not available" : percentFmt(value);
+  const headroom = pricingHeadroom(forecast);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -106,7 +101,7 @@ export default function ForecastEvidence({ forecast, hotelName, onClose }: {
           <section aria-label="Demand pressure and confidence">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <span className="text-3xl font-semibold tabular-nums">{forecast.demandScore}<span className="text-base font-normal" style={{ color: "var(--text-secondary)" }}>/100</span></span>
-              <span>{pressureLabel(forecast.demandScore)}</span>
+              <span>{demandPressureLabel(forecast.demandScore)}</span>
               <span className="rounded px-2 py-1 text-xs capitalize" style={{ background: "var(--surface-2)" }}>{forecast.confidenceLabel} confidence</span>
             </div>
             <p className="mt-2 text-xs" style={{ color: "var(--text-secondary)" }}>50 is neutral. Higher pressure starts at 65; lower pressure is 35 or below. This measures pressure in advertised rates and feed availability, not occupancy.</p>
@@ -114,6 +109,25 @@ export default function ForecastEvidence({ forecast, hotelName, onClose }: {
             <ul className="mt-3 list-disc space-y-1 pl-4" aria-label="Confidence reasons">
               {forecast.confidenceReasons.map((reason, index) => <li key={index}>{reason}</li>)}
             </ul>
+          </section>
+
+          <section aria-label="Pricing headroom vs the compset" className="rounded-lg p-4" style={{ background: "var(--surface-2)" }}>
+            <h3 className="text-lg">How much more could this hotel charge?</h3>
+            {headroom.center == null || headroom.basis == null ? (
+              <p className="mt-2 text-sm" style={{ color: "var(--text-secondary)" }}>Not enough measured history to estimate this hotel&apos;s pricing room yet.</p>
+            ) : (
+              <>
+                <p className="mt-2 text-2xl font-semibold tabular-nums">
+                  {money(headroom.center)}{" "}
+                  <span className="text-base font-normal" style={{ color: headroom.pct != null && headroom.pct >= 0 ? "var(--delta-good-text)" : "var(--status-warning)" }}>
+                    ({headroom.pct != null && headroom.pct >= 0 ? "+" : ""}{percent(headroom.pct)} vs. the compset&apos;s current median)
+                  </span>
+                </p>
+                <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>
+                  Compset is already charging {money(headroom.basis)} for this date. Range {money(headroom.low)}–{money(headroom.high)}, from this hotel&apos;s measured position against the market and today&apos;s demand signals.
+                </p>
+              </>
+            )}
           </section>
 
           <section aria-labelledby={`${titleId}-signals`}>
@@ -144,7 +158,7 @@ export default function ForecastEvidence({ forecast, hotelName, onClose }: {
           </section>
 
           <section aria-labelledby={`${titleId}-market`} className="rounded-lg p-4" style={{ background: "var(--surface-2)" }}>
-            <h3 id={`${titleId}-market`} className="text-lg">Experimental market projection</h3>
+            <h3 id={`${titleId}-market`} className="text-lg">Exact figures behind the headroom above</h3>
             <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-2">
               <dt>Current competitor median</dt><dd className="text-right tabular-nums">{money(forecast.currentMarketMedian)}</dd>
               <dt>Forecast competitor median</dt><dd className="text-right tabular-nums">{money(forecast.forecastMedian)}</dd>
@@ -152,7 +166,7 @@ export default function ForecastEvidence({ forecast, hotelName, onClose }: {
               <dt>Hotel&apos;s typical weekday rate</dt><dd className="text-right tabular-nums">{money(forecast.normalRate)}</dd>
               <dt>Measured hotel / market ratio</dt><dd className="text-right tabular-nums">{forecast.hotelPositionRatio ?? "Not available"}</dd>
             </dl>
-            <p className="mt-3 text-xs" style={{ color: "var(--text-secondary)" }}>The band describes possible market rates using a heuristic spread; it has no claimed probability. It is not a recommended selling range. Forecast pricing recommendations are not enabled in this release.</p>
+            <p className="mt-3 text-xs" style={{ color: "var(--text-secondary)" }}>The band describes possible market rates using a heuristic spread; it has no claimed probability. Treat it as a starting point for a pricing decision, not a fixed price.</p>
           </section>
 
           <section aria-labelledby={`${titleId}-captures`}>
@@ -194,7 +208,7 @@ export default function ForecastEvidence({ forecast, hotelName, onClose }: {
 
           <details className="rounded border p-3 text-xs" style={{ borderColor: "var(--border)" }}>
             <summary className="cursor-pointer font-semibold">Full stored evidence and exact calculation values</summary>
-            <p className="mt-2" style={{ color: "var(--text-secondary)" }}>Includes capture-level samples. Experimental hotel candidate fields are diagnostic model values, not selling recommendations.</p>
+            <p className="mt-2" style={{ color: "var(--text-secondary)" }}>Includes capture-level samples. Hotel candidate fields are model estimates, not selling recommendations.</p>
             <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-all text-[11px]">{JSON.stringify(forecast, null, 2)}</pre>
           </details>
         </div>

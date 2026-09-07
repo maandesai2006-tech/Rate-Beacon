@@ -466,7 +466,7 @@ export function computeForecast(input: ForecastInput): DemandForecast {
     "The market band is a heuristic allowance for lead time, rate dispersion and missing history, not a calibrated probability interval.",
     "Only compression and matched-competitor price movement are enabled. Events, holidays, weather, flights and PMS calibration are not included.",
     "Retention preserves full captures for about 30 days, then one row per hotel-night; missing historical pairs are not reconstructed.",
-    "Property rate candidates are unvalidated and withheld from pricing guidance in release 1.",
+    "Property rate candidates are a model estimate, not a validated selling price; treat the suggested range as a starting point for a pricing decision.",
   ];
   return {
     version: 1, hotelId: input.hotelId, checkIn: input.checkIn, asOf: input.asOf, currency: input.currency, leadTime,
