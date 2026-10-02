@@ -29,6 +29,7 @@ import { getHolidays, getWeather } from "./signals";
 import { loadForecastMarkets } from "./forecast-service";
 import { readStoredForecasts } from "./forecast-storage";
 import { addDaysISO, todayISO } from "./dates";
+import { DEFAULT_MODEL } from "./gemini";
 
 export interface AssistantTurn {
   role: "user" | "model";
@@ -159,7 +160,7 @@ export async function askAssistant(
   // bounds what one question can cost.
   for (let round = 0; round < 3; round++) {
     const res = await ai.models.generateContent({
-      model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+      model: DEFAULT_MODEL,
       contents,
       config: {
         systemInstruction: SYSTEM,

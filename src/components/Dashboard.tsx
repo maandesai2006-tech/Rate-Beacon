@@ -34,6 +34,9 @@ interface Hydration {
   status: "idle" | "collecting" | "complete";
   forecastPending?: boolean;
   errors?: string[];
+  /** The rate source is failing; collection resumes on its own at this time. */
+  pausedUntil?: string | null;
+  sourceProblem?: string | null;
 }
 
 interface ProfileStub {
@@ -570,17 +573,21 @@ export default function Dashboard() {
           </button>
           <button
             onClick={refresh}
-            disabled={refreshing || hydration?.status === "collecting"}
+            disabled={refreshing || (hydration?.status === "collecting" && !hydration?.pausedUntil)}
             className="btn-accent px-4 py-1.5 text-[13px]"
             title={
-              hydration?.forecastPending
+              hydration?.pausedUntil
+                ? `The rate source is not answering${hydration.sourceProblem ? ` (${hydration.sourceProblem})` : ""}. Collection resumes on its own at ${new Date(hydration.pausedUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}; click to try now.`
+                : hydration?.forecastPending
                 ? "Rate collection is finished; demand forecasts are being computed"
                 : hydration?.status === "collecting"
                 ? "Rates are being collected in the background"
                 : "Collect today's rates again"
             }
           >
-            {hydration?.forecastPending
+            {hydration?.pausedUntil
+              ? "Rate source down · try again"
+              : hydration?.forecastPending
               ? "Computing demand forecasts"
               : hydration?.status === "collecting"
               ? `Collecting ${hydration.cursor.toLocaleString()} / ${hydration.total.toLocaleString()}`
@@ -1535,9 +1542,12 @@ function GridRowView({
     const lines = [hotel.name];
     if (c.capturedOn == null) {
       lines.push("No data yet — refresh rates.");
-    } else if (!c.available || c.price == null) {
-      lines.push("Sold out / no rate returned");
+    } else if (c.available === false) {
+      lines.push("Sold out — no seller has a room");
       lines.push(`checked ${c.capturedOn}`);
+    } else if (c.price == null) {
+      lines.push("Unknown — the rate source did not answer");
+      lines.push(`tried ${c.capturedOn}`);
     } else {
       lines.push(
         `${fmt(c.price)} · ${c.direct ? "brand site" : c.source ?? "cheapest seller"}`
@@ -1637,11 +1647,12 @@ function GridRowView({
 
       {comps.map((h) => {
         const c = row.cells[h.hotel_id];
-        const soldOut = c.capturedOn != null && (!c.available || c.price == null);
+        const soldOut = c.capturedOn != null && c.available === false;
+        const unknown = c.capturedOn != null && !soldOut && c.price == null;
         return (
           <td
             key={h.hotel_id}
-            className={`${soldOut ? "bin-na" : binOf(c.price, row.median)} px-3 py-1.5 tabular-nums`}
+            className={`${soldOut || unknown ? "bin-na" : binOf(c.price, row.median)} px-3 py-1.5 tabular-nums`}
             onMouseMove={(e) => cellTooltip(e, h)}
             onMouseLeave={() => onTooltip(null)}
           >
@@ -1649,6 +1660,8 @@ function GridRowView({
               <span style={{ color: "var(--text-muted)" }}>—</span>
             ) : soldOut ? (
               <span style={{ color: "var(--text-muted)" }}>sold out</span>
+            ) : unknown ? (
+              <span style={{ color: "var(--text-muted)" }}>?</span>
             ) : (
               <>
                 {fmt(c.price as number)}
@@ -1974,7 +1987,7 @@ function RateLadder({
       const isMine = h.is_mine;
       const price = isMine ? row.myPrice : row.cells[h.hotel_id]?.price ?? null;
       const c = row.cells[h.hotel_id];
-      const soldOut = !isMine && c?.capturedOn != null && (!c.available || c.price == null);
+      const soldOut = !isMine && c?.capturedOn != null && c.available === false;
       return { hotel: h, price, soldOut, direct: c?.direct ?? false };
     })
     .sort((a, b) => (b.price ?? -1) - (a.price ?? -1));

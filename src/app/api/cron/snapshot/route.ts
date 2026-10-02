@@ -22,8 +22,9 @@ export async function GET(req: NextRequest) {
     // call, including after a rename or a first deploy.
     const target = await registerSchedulerTarget();
 
-    // Leave headroom under the platform's 60s limit so the state write lands.
-    const state = await tickHydration({ budgetMs: 45_000 });
+    // In-flight lookups are bounded by the deadline now, so the tick can use
+    // most of the platform's 60s and still land its state write.
+    const state = await tickHydration({ budgetMs: 52_000 });
 
     return NextResponse.json({
       ...state,

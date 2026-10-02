@@ -20,6 +20,7 @@ import { buildJobs, processJobs, runEnrichment } from "./snapshot";
 import { todayISO } from "./dates";
 import { reportError } from "./errors";
 import { tickForecasts } from "./forecast-service";
+import { BACKOFF_MINUTES, pauseUntil, REPEAT_BACKOFF_MINUTES, runLooksDegraded, SOURCE_ERROR_PREFIX } from "./collect-health";
 
 export interface HydrationState {
   runDate: string;
@@ -35,6 +36,10 @@ export interface HydrationState {
   /** 0–100, for a progress bar that does not lie when total is unknown. */
   percent: number;
   status: "idle" | "collecting" | "complete";
+  /** The rate source is failing; collection resumes on its own at this time. */
+  pausedUntil: string | null;
+  /** What the source said when it failed, for the person looking at the bar. */
+  sourceProblem: string | null;
 }
 
 interface RunRow {
@@ -48,9 +53,18 @@ interface RunRow {
   finished_at: string | null;
   forecast_cursor: number;
   forecast_finished_at: string | null;
+  lookups: number;
+  unpriced: number;
+  paused_until: string | null;
 }
 
-const COLUMNS = "run_date, cursor, total, rows_written, errors, started_at, last_tick_at, finished_at, forecast_cursor, forecast_finished_at";
+const COLUMNS =
+  "run_date, cursor, total, rows_written, errors, started_at, last_tick_at, finished_at, forecast_cursor, forecast_finished_at, lookups, unpriced, paused_until";
+
+function sourceProblemOf(errors: string[] | null): string | null {
+  const hit = (errors ?? []).find((e) => e.startsWith(SOURCE_ERROR_PREFIX));
+  return hit ? hit.slice(SOURCE_ERROR_PREFIX.length) : null;
+}
 
 function toState(row: RunRow | null): HydrationState {
   if (!row) {
@@ -66,8 +80,11 @@ function toState(row: RunRow | null): HydrationState {
       errors: [],
       percent: 0,
       status: "idle",
+      pausedUntil: null,
+      sourceProblem: null,
     };
   }
+  const paused = row.paused_until && Date.parse(row.paused_until) > Date.now() ? row.paused_until : null;
   const percent = row.total > 0 ? Math.min(100, Math.round((row.cursor / row.total) * 100)) : 0;
   return {
     runDate: row.run_date,
@@ -81,6 +98,8 @@ function toState(row: RunRow | null): HydrationState {
     errors: row.errors ?? [],
     percent: row.finished_at ? 100 : percent,
     status: row.finished_at && row.forecast_finished_at ? "complete" : "collecting",
+    pausedUntil: paused,
+    sourceProblem: paused ? sourceProblemOf(row.errors) : null,
   };
 }
 
@@ -114,6 +133,9 @@ export async function queueHydration(supa: SupabaseClient = db()): Promise<Hydra
       finished_at: null,
       forecast_cursor: 0,
       forecast_finished_at: null,
+      lookups: 0,
+      unpriced: 0,
+      paused_until: null,
     },
     { onConflict: "run_date" }
   );
@@ -128,7 +150,7 @@ export async function queueHydration(supa: SupabaseClient = db()): Promise<Hydra
  * keeps calling long after the work is done.
  */
 export async function tickHydration(
-  { budgetMs = 45_000 }: { budgetMs?: number } = {}
+  { budgetMs = 45_000, ignorePause = false }: { budgetMs?: number; ignorePause?: boolean } = {}
 ): Promise<HydrationState & { didWork: boolean }> {
   const supa = db();
   const runDate = todayISO();
@@ -146,6 +168,13 @@ export async function tickHydration(
     return finishForecastStage(supa, existing, deadline);
   }
 
+  // The source failed recently. Leave it alone until the backoff is up rather
+  // than spending every minute of the day confirming it is still down. A
+  // person pressing Refresh is allowed one probe.
+  if (!ignorePause && existing?.paused_until && Date.parse(existing.paused_until) > Date.now()) {
+    return { ...toState(existing), didWork: false };
+  }
+
   const plan = await buildJobs(supa);
   if (plan.jobs.length === 0) {
     const now = new Date().toISOString();
@@ -160,6 +189,9 @@ export async function tickHydration(
       finished_at: now,
       forecast_cursor: 0,
       forecast_finished_at: now,
+      lookups: 0,
+      unpriced: 0,
+      paused_until: null,
     };
     await supa.from("collection_runs").upsert(row, { onConflict: "run_date" });
     return { ...toState(row as RunRow), didWork: false };
@@ -167,8 +199,35 @@ export async function tickHydration(
 
   const cursor = existing?.cursor ?? 0;
   const slice = plan.jobs.slice(cursor);
-  // Reserve headroom for the state write and the first forecast slice.
-  const r = await processJobs(supa, slice, { budgetMs: Math.max(1, deadline - Date.now() - 12_000) });
+  // No new lookup after six seconds before the deadline, none in flight past
+  // one second before it. In-flight calls are bounded now, so the old twelve
+  // seconds of reserve was mostly idle time.
+  const r = await processJobs(supa, slice, {
+    budgetMs: Math.max(1, deadline - Date.now() - 6_000),
+    hardDeadline: deadline - 1_000,
+  });
+
+  if (r.tripped) {
+    return recordOutage(supa, existing, runDate, plan.jobs.length, r.lastFailure ?? "the rate source is not answering", {
+      resetRun: false,
+    });
+  }
+
+  // The source can also fail by answering with nothing. One empty answer is a
+  // full hotel; most of a day's answers empty is the source. The rows this
+  // run has written so far cannot be believed, so they become unknown.
+  const lookups = (existing?.lookups ?? 0) + r.lookups;
+  const unpriced = (existing?.unpriced ?? 0) + r.unpriced;
+  if (runLooksDegraded(lookups, unpriced, plan.jobs.length)) {
+    return recordOutage(
+      supa,
+      existing,
+      runDate,
+      plan.jobs.length,
+      `${unpriced} of ${lookups} lookups came back with no price; that is the source, not the market`,
+      { resetRun: true }
+    );
+  }
 
   const nextCursor = cursor + r.done;
   const complete = nextCursor >= plan.jobs.length;
@@ -180,7 +239,8 @@ export async function tickHydration(
   }
   if (plan.note) await reportError("collection", plan.note, {}, supa);
 
-  const errors = [...(existing?.errors ?? []), ...r.errors];
+  // Progress means the source is back; an outage note would now mislead.
+  const errors = [...(existing?.errors ?? []).filter((e) => !e.startsWith(SOURCE_ERROR_PREFIX)), ...r.errors];
 
   const now = new Date().toISOString();
   const row: RunRow = {
@@ -196,6 +256,9 @@ export async function tickHydration(
     finished_at: complete ? now : null,
     forecast_cursor: existing?.forecast_cursor ?? 0,
     forecast_finished_at: null,
+    lookups,
+    unpriced,
+    paused_until: null,
   };
   const { error: saveError } = await supa.from("collection_runs").upsert(row, { onConflict: "run_date" });
   if (saveError) throw new Error(`Could not save collection progress: ${saveError.message}`);
@@ -214,6 +277,60 @@ export async function tickHydration(
     return { ...state, didWork: r.done > 0 || state.didWork };
   }
   return { ...toState(row), didWork: r.done > 0 };
+}
+
+/**
+ * The rate source is failing: back off, say so where someone will see it, and
+ * do not let anything this run wrote pass for a market fact.
+ *
+ * With `resetRun`, the run itself is not believable, so its empty answers are
+ * turned back into unknowns and it starts again from the top once the source
+ * recovers. Without it, the breaker stopped the slice before it advanced, so
+ * the cursor is already where it should be.
+ */
+async function recordOutage(
+  supa: SupabaseClient,
+  existing: RunRow | null,
+  runDate: string,
+  total: number,
+  reason: string,
+  { resetRun }: { resetRun: boolean }
+): Promise<HydrationState & { didWork: boolean }> {
+  const now = new Date();
+  const message = `${SOURCE_ERROR_PREFIX}${reason}`.slice(0, 300);
+  const previous = existing?.errors ?? [];
+  // One report per outage, not one per probe.
+  const alreadyReported = previous.some((e) => e.startsWith(SOURCE_ERROR_PREFIX));
+
+  if (resetRun) {
+    const { error: undoError } = await supa
+      .from("rate_snapshots")
+      .update({ available: null })
+      .eq("captured_on", runDate)
+      .is("price", null)
+      .eq("available", false);
+    if (undoError) throw new Error(`Could not withdraw unbelievable rates: ${undoError.message}`);
+  }
+
+  const row: RunRow = {
+    run_date: runDate,
+    cursor: resetRun ? 0 : existing?.cursor ?? 0,
+    total,
+    rows_written: resetRun ? 0 : existing?.rows_written ?? 0,
+    errors: [message, ...previous.filter((e) => !e.startsWith(SOURCE_ERROR_PREFIX))].slice(0, 10),
+    started_at: existing?.started_at ?? now.toISOString(),
+    last_tick_at: now.toISOString(),
+    finished_at: null,
+    forecast_cursor: 0,
+    forecast_finished_at: null,
+    lookups: resetRun ? 0 : existing?.lookups ?? 0,
+    unpriced: resetRun ? 0 : existing?.unpriced ?? 0,
+    paused_until: pauseUntil(now, alreadyReported ? REPEAT_BACKOFF_MINUTES : BACKOFF_MINUTES),
+  };
+  const { error } = await supa.from("collection_runs").upsert(row, { onConflict: "run_date" });
+  if (error) throw new Error(`Could not record the outage: ${error.message}`);
+  if (!alreadyReported) await reportError("collection", message, {}, supa);
+  return { ...toState(row), didWork: false };
 }
 
 async function finishForecastStage(

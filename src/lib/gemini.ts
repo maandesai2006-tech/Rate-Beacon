@@ -11,12 +11,15 @@
 // is told to return null rather than guess, because a null is a gap the
 // dashboard can show honestly and a hallucinated number is not.
 //
-// Free tier: gemini-2.0-flash allows generous daily requests at no cost, and a
-// hotel sends one report a day.
+// A hotel sends one report a day, comfortably inside the free tier.
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-export const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+// The one place the model is named. gemini-2.0-flash was retired and every call
+// to it returned 404, which silently took the assistant, report extraction and
+// competitor-key resolution down together; three hardcoded copies of the name
+// is why. GEMINI_MODEL overrides it without a deploy.
+export const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 export interface ExtractedReport {
   hotel_name: string | null;

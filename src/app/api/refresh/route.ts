@@ -30,15 +30,18 @@ export async function POST(req: NextRequest) {
 
     // The first slice runs here, inside this request, so the bar moves before
     // the operator looks away. The scheduler carries on from wherever this
-    // stops.
-    const state = await tickHydration({ budgetMs: 35_000 });
+    // stops. A press during a source outage is allowed one probe, so recovery
+    // is noticed the moment someone asks rather than at the next backoff.
+    const state = await tickHydration({ budgetMs: 45_000, ignorePause: true });
     return NextResponse.json({
       ...state,
       queued: true,
       note:
         state.status === "complete"
           ? "Today's rates are collected."
-          : `Collecting: ${state.cursor} of ${state.total} hotel-nights so far. This page updates as the rest land — you do not have to wait here.`,
+          : state.pausedUntil
+            ? `The rate source is not answering right now${state.sourceProblem ? ` (${state.sourceProblem})` : ""}. Collection resumes on its own; nothing it could not confirm has been stored as sold out.`
+            : `Collecting: ${state.cursor} of ${state.total} hotel-nights so far. This page updates as the rest land — you do not have to wait here.`,
     });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
