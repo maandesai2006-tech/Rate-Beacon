@@ -59,7 +59,8 @@ export interface RateCell {
   source: string | null;
   direct: boolean;
   offers: Quote[];
-  available: boolean;
+  /** false: no seller has a room. null: the source did not answer, so unknown. */
+  available: boolean | null;
   capturedOn: string | null;
   /** Far above this hotel's own recent level — a scrape error or a real event. */
   isAnomaly: boolean;
@@ -125,5 +126,5 @@ export interface GridResponse {
 export interface HistoryPoint {
   capturedOn: string;
   price: number | null;
-  available: boolean;
+  available: boolean | null;
 }

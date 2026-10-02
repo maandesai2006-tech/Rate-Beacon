@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getRates } from "./xotelo";
+import { sourceFailing, type LookupOutcome } from "./collect-health";
 import { addDaysISO, dateRange, todayISO } from "./dates";
 import { refreshEvents, refreshGeo, refreshRatings } from "./enrich";
 import type { Profile } from "./types";
@@ -147,6 +148,13 @@ export interface ProcessResult {
   errors: string[];
   /** How many of the given jobs were finished before the budget ran out. */
   done: number;
+  /** Lookups attempted, and how many of them came back without a price. */
+  lookups: number;
+  unpriced: number;
+  /** The source itself is failing; the caller should back off, not advance. */
+  tripped: boolean;
+  /** The source's own words, when it failed. */
+  lastFailure: string | null;
 }
 
 /**
@@ -154,18 +162,43 @@ export interface ProcessResult {
  *
  * The budget is what makes a run resumable: the caller records how many jobs
  * were finished and starts there next time, instead of restarting the day.
+ *
+ * Two deadlines. No new lookup starts after `budgetMs`; no lookup already in
+ * flight runs past `hardDeadline`. Without the second, one slow upstream call
+ * could outlive the function and take the tick's progress with it.
+ *
+ * Every lookup is classified. When the recent ones say the source is failing
+ * rather than the market being full, the slice stops and reports `tripped`
+ * with nothing done, so the cursor stays where it was and the caller can back
+ * off instead of writing a day of unknowns.
  */
 export async function processJobs(
   supa: SupabaseClient,
   jobs: RateJob[],
-  { budgetMs = 45_000, concurrency = 4 }: { budgetMs?: number; concurrency?: number } = {}
+  {
+    budgetMs = 45_000,
+    concurrency = 4,
+    hardDeadline,
+  }: { budgetMs?: number; concurrency?: number; hardDeadline?: number } = {}
 ): Promise<ProcessResult> {
   const deadline = Date.now() + budgetMs;
+  const callDeadline = hardDeadline ?? deadline + 10_000;
   const errors: string[] = [];
+  const outcomes: { hotelId: string; outcome: LookupOutcome }[] = [];
   let rowsWritten = 0;
   let cursor = 0;
   let finished = 0;
   let aborted = false;
+  let tripped = false;
+  let lastFailure: string | null = null;
+
+  function record(hotelId: string, outcome: LookupOutcome) {
+    outcomes.push({ hotelId, outcome });
+    if (!tripped && sourceFailing(outcomes)) {
+      tripped = true;
+      aborted = true;
+    }
+  }
 
   async function worker() {
     while (!aborted) {
@@ -180,8 +213,11 @@ export async function processJobs(
           checkIn,
           addDaysISO(checkIn, 1),
           hotel.currency,
-          hotel.adults
+          hotel.adults,
+          callDeadline
         );
+        if (r.failure) lastFailure = r.failure;
+        record(hotel.hotel_id, r.available == null ? "failed" : r.price != null ? "priced" : "no_offers");
         const { error } = await supa.from("rate_snapshots").upsert(
           {
             hotel_id: hotel.hotel_id,
@@ -201,6 +237,8 @@ export async function processJobs(
         if (error) errors.push(`${hotel.name} ${checkIn}: ${error.message}`);
         else rowsWritten++;
       } catch (e) {
+        lastFailure = (e as Error).message;
+        record(hotel.hotel_id, "failed");
         errors.push(`${hotel.name} ${checkIn}: ${(e as Error).message}`);
         // Persistent failure (network, upstream outage) — stop hammering.
         if (errors.length >= 10) aborted = true;
@@ -210,7 +248,18 @@ export async function processJobs(
   }
 
   await Promise.all(Array.from({ length: concurrency }, worker));
-  return { rowsWritten, errors, done: finished };
+  const unpriced = outcomes.filter((o) => o.outcome !== "priced").length;
+  return {
+    rowsWritten,
+    errors,
+    // A tripped slice advances nothing: the same nights are tried again once
+    // the source is back, and upserts make the repeat harmless.
+    done: tripped ? 0 : finished,
+    lookups: tripped ? 0 : outcomes.length,
+    unpriced: tripped ? 0 : unpriced,
+    tripped,
+    lastFailure,
+  };
 }
 
 /** Enrichment worth running once, after the day's rates are in. */

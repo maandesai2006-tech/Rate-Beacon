@@ -9,18 +9,31 @@ const BASE = "https://data.xotelo.com/api";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// No single attempt may hang a collection tick: a request with no timeout can
+// outlive the function that made it, and the platform then kills the tick.
+const ATTEMPT_TIMEOUT_MS = 15_000;
+
 async function xoteloGet<T>(
   path: string,
-  params: Record<string, string>
+  params: Record<string, string>,
+  deadline: number = Infinity
 ): Promise<T> {
   const url = `${BASE}${path}?${new URLSearchParams(params)}`;
   let lastErr: Error | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await sleep(700 * 2 ** attempt);
+    if (attempt > 0) {
+      const backoff = 700 * 2 ** attempt;
+      // A retry that cannot finish before the caller's deadline is not a retry.
+      if (Date.now() + backoff + 1_000 > deadline) break;
+      await sleep(backoff);
+    }
+    const remaining = deadline - Date.now();
+    if (remaining < 1_000) break;
     try {
       const res = await fetch(url, {
         headers: { Accept: "application/json" },
         cache: "no-store",
+        signal: AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining)),
       });
       if (res.status === 429 || res.status >= 500) {
         lastErr = new Error(`Xotelo ${res.status} on ${path}`);
@@ -93,7 +106,14 @@ export interface XoteloRates {
   direct: boolean; // true when the headline rate is the brand site's
   offers: Quote[];
   currency: string | null;
-  available: boolean;
+  /**
+   * true: priced. false: the source answered and no seller has a room.
+   * null: the source did not answer, so availability is unknown. Never store
+   * an unanswered lookup as false: that is a fabricated sellout.
+   */
+  available: boolean | null;
+  /** Why the source did not answer, when it did not. */
+  failure: string | null;
 }
 
 // Sub-brands that identify a chain in a hotel's own name, keyed by the
@@ -190,7 +210,8 @@ export async function getRates(
   checkIn: string,
   checkOut: string,
   currency: string,
-  adults: number
+  adults: number,
+  deadline: number = Infinity
 ): Promise<XoteloRates> {
   const empty: XoteloRates = {
     price: null,
@@ -200,6 +221,7 @@ export async function getRates(
     offers: [],
     currency: null,
     available: false,
+    failure: null,
   };
   try {
     const result = await xoteloGet<RatesResult>("/rates", {
@@ -209,7 +231,7 @@ export async function getRates(
       currency,
       adults: String(adults),
       rooms: "1",
-    });
+    }, deadline);
     const offers: Quote[] = (result.rates ?? [])
       .filter((r) => typeof r.rate === "number" && r.rate! > 0)
       .map((r) => ({
@@ -229,11 +251,15 @@ export async function getRates(
       offers,
       currency: result.currency ?? currency,
       available: true,
+      failure: null,
     };
   } catch (e) {
     if (e instanceof XoteloApiError) {
-      // "No availability" style errors mean sold out / not bookable that night.
-      return empty;
+      // An error body is the source declining to answer: throttling, a bad
+      // key, a changed contract. It used to be stored as "sold out", which is
+      // how a throttled week became a month of fabricated sellouts. It is
+      // unknown, and the collector decides whether it is an outage.
+      return { ...empty, available: null, failure: e.message };
     }
     throw e;
   }

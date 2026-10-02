@@ -18,6 +18,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { verifyHotelKey } from "./xotelo";
 import { keysInText } from "./hotel-match";
+import { DEFAULT_MODEL } from "./gemini";
 
 export interface ResolvableHotel {
   name: string;
@@ -90,7 +91,7 @@ export async function resolveHotelKeys(
   try {
     const ai = new GoogleGenAI({ apiKey });
     const res = await ai.models.generateContent({
-      model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+      model: DEFAULT_MODEL,
       contents: prompt,
       config: {
         temperature: 0,

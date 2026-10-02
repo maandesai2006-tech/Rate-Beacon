@@ -325,7 +325,8 @@ async function buildGrid(
     const anomalyCount = flaggedCells.length;
     const soldOutCount = comps.filter((h) => {
       const c = cells[h.hotel_id];
-      return c.capturedOn != null && !c.available;
+      // Only an explicit "no rooms" is a sellout. Unknown is not evidence.
+      return c.capturedOn != null && c.available === false;
     }).length;
 
     const mkt = median(compPrices);
@@ -365,6 +366,7 @@ async function buildGrid(
       const oldSnap = oldestByKey.get(`${h.hotel_id}|${date}`);
       const nowSnap = latestByKey.get(`${h.hotel_id}|${date}`);
       if (!oldSnap || !nowSnap || oldSnap.captured_on >= nowSnap.captured_on) continue;
+      if (oldSnap.available == null || nowSnap.available == null) continue;
       paced++;
       if (!oldSnap.available) oldSold++;
       if (!nowSnap.available) nowSoldAmongOld++;
